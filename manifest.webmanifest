@@ -1,0 +1,15 @@
+{
+  "name": "Parrot",
+  "short_name": "Parrot",
+  "description": "会議の録音を、そのまま文字起こし",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#EEF3EF",
+  "theme_color": "#EEF3EF",
+  "lang": "ja",
+  "icons": [
+    { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

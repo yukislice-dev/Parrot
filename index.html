@@ -2,7 +2,15 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#EEF3EF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1611" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Parrot">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
 <title>Parrot</title>
 <link rel="icon" id="favicon" href="">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -89,6 +97,13 @@ a{color:var(--sky)}
 .rec-sub{color:var(--muted);font-size:14px;text-align:center}
 .rec-warn{margin-top:10px;font-size:13px;background:var(--sun-soft);border-radius:10px;padding:8px 14px;text-align:center}
 .prefields{width:100%;max-width:520px;margin-top:22px}
+.import{margin-top:22px;padding-top:18px;border-top:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
+.import .btn{display:inline-flex;align-items:center;gap:8px;padding:11px 18px;font-size:15px}
+.import .btn svg{width:18px;height:18px}
+.import .help{font-size:13px;color:var(--muted);line-height:1.6;max-width:30em}
+.vh{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.rec-btn:disabled{opacity:.5;cursor:not-allowed}
+body{padding-bottom:env(safe-area-inset-bottom)}
 .prefields details{margin-top:8px}
 .prefields summary{cursor:pointer;font-size:14px;color:var(--muted)}
 
@@ -257,6 +272,14 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:0 0 30px}
           <span class="help">入れておくと、呼びかけや自己紹介から分かる人は名前で表示されます。分からない人は「司会者」「話者A」などになります。</span>
         </div>
       </details>
+      <div class="import">
+        <button class="btn" id="btnImport" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+          録音済みの音声ファイルから文字起こし
+        </button>
+        <input type="file" id="fileInput" class="vh" tabindex="-1" aria-hidden="true" accept="audio/*,.m4a,.mp3,.wav,.aac,.ogg,.oga,.opus,.flac,.webm,.mp4,.mov">
+        <p class="help" id="importHelp">m4a・mp3・wav などに対応。iPhoneのボイスメモの録音は、ボイスメモで共有ボタン →「"ファイル"に保存」をしてから選んでください。</p>
+      </div>
     </div>
   </section>
 
@@ -716,6 +739,17 @@ function toast(msg, ms = 3800) {
   const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), ms);
 }
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+async function saveFile(blob, name) {
+  // iPhoneでは共有シートを出す（「"ファイル"に保存」「Word」「Obsidian」などを選べる）
+  if (isIOS && navigator.canShare && window.File) {
+    const f = new File([blob], name, { type: blob.type || 'application/octet-stream' });
+    if (navigator.canShare({ files: [f] })) {
+      try { await navigator.share({ files: [f] }); return; } catch (e) { if (e.name === 'AbortError') return; }
+    }
+  }
+  download(blob, name);
+}
 function download(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name;
@@ -797,6 +831,18 @@ registerProcessor('parrot-tap',Tap);`;
 
 function makeResampler(inRate) {
   const ratio = inRate / RATE; let acc = 0, cnt = 0, pos = 0;
+  if (ratio < 1) { // 16kHz未満の音声は直線補間で引き伸ばす
+    let t = 0, prev = 0;
+    return f32 => {
+      const out = new Int16Array(Math.ceil(f32.length / ratio) + 2); let k = 0;
+      for (let i = 0; i < f32.length; i++) {
+        const cur = f32[i];
+        while (t < 1) { let v = prev + (cur - prev) * t; v = v < -1 ? -1 : v > 1 ? 1 : v; out[k++] = v < 0 ? v * 32768 : v * 32767; t += ratio; }
+        t -= 1; prev = cur;
+      }
+      return out.subarray(0, k);
+    };
+  }
   return f32 => {
     const out = new Int16Array(Math.ceil(f32.length / ratio) + 2); let k = 0;
     for (let i = 0; i < f32.length; i++) {
@@ -824,13 +870,13 @@ function makeTail(n) {
 async function startRecording() {
   if (!getKey()) { openSettings(true); toast('はじめにAPIキーを設定してください'); return; }
   if (typeof lamejs === 'undefined') { toast('録音用の部品を読み込めませんでした。ページを再読み込みしてください'); return; }
-  if (S.busy) { toast('前の文字起こしが終わるまでお待ちください'); return; }
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast('このブラウザでは録音できません。Chromeで開いてください'); return; }
+  if (S.busy || S.importing) { toast('前の文字起こし・読み込みが終わるまでお待ちください'); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast(isIOS ? 'このブラウザでは録音できません。Safariで開いてください' : 'このブラウザでは録音できません。Chromeで開いてください'); return; }
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: true, autoGainControl: true } });
   } catch (e) {
-    if (e.name === 'NotAllowedError') toast('マイクの使用が許可されていません。アドレスバー左のアイコンからマイクを「許可」にしてください', 7000);
+    if (e.name === 'NotAllowedError') toast(isIOS ? 'マイクの使用が許可されていません。設定アプリ →「Safari」→「マイク」を「確認」か「許可」にしてください' : 'マイクの使用が許可されていません。アドレスバー左のアイコンからマイクを「許可」にしてください', 7000);
     else if (e.name === 'NotFoundError') toast('マイクが見つかりません。マイクが接続されているか確認してください', 6000);
     else toast('マイクを使えませんでした：' + e.message, 6000);
     return;
@@ -868,7 +914,11 @@ async function startRecording() {
   R = { stream, ctx, src, node, port, resample: makeResampler(ctx.sampleRate), tail: makeTail(OVERLAP_SEC * RATE), totalSamples: 0, level: 0 };
   beginPart(false);
   port.onmessage = e => onAudio(e.data);
-  stream.getAudioTracks()[0].addEventListener('ended', () => { if (R) { toast('マイクが切断されたため録音を終了しました', 6000); stopRecording(); } });
+  stream.getAudioTracks()[0].addEventListener('ended', () => { if (R) { toast('マイクが切断されたため録音を終了しました。ここまでの録音は文字起こしされます', 7000); stopRecording(); } });
+  // iPhoneでは画面を消す・アプリを切り替えると音声の取り込みが止まる。戻ってきたら再開し、止まっていた時間を知らせる
+  const markPause = () => { if (R && !R.pausedAt) R.pausedAt = Date.now(); };
+  ctx.onstatechange = () => { if (ctx.state !== 'running') markPause(); };
+  stream.getAudioTracks()[0].addEventListener('mute', markPause);
   acquireWake();
   saveSession(sess);
   hideResume();
@@ -918,11 +968,286 @@ async function stopRecording() {
 let wakeLock = null;
 async function acquireWake() { try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { wakeLock = null; } }
 function releaseWake() { try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null; }
-document.addEventListener('visibilitychange', () => { if (R && document.visibilityState === 'visible') acquireWake(); });
+document.addEventListener('visibilitychange', async () => {
+  if (!R) return;
+  if (document.visibilityState === 'hidden') { if (isIOS && !R.pausedAt) R.pausedAt = Date.now(); return; }
+  acquireWake();
+  try { if (R.ctx.state !== 'running') await R.ctx.resume(); } catch (e) {}
+  if (R && R.pausedAt) {
+    const sec = (Date.now() - R.pausedAt) / 1000; R.pausedAt = null;
+    if (sec > 3) toast(`画面が消えていた間（約${durJa(sec)}）は録音できていません。録音は続いています`, 8000);
+  }
+});
 window.addEventListener('beforeunload', e => {
   const pending = S.session && S.session.parts.some(p => ['queued', 'processing', 'waiting'].includes(p.status));
-  if (R || pending) { e.preventDefault(); e.returnValue = ''; }
+  if (R || S.importing || pending) { e.preventDefault(); e.returnValue = ''; }
 });
+
+/* ====== 音声ファイルの読み込み ====== */
+// m4a は中のAAC音声をそのまま切り出し、mp3 はフレーム単位で切り出し、wav は読み込んでmp3に変換。
+// それ以外の形式や、1回で送れない大きさの部分は、ブラウザで音声を展開してmp3に変換する。
+const MAX_INLINE = 14 * 1024 * 1024; // Geminiへ1回で送れる量（base64化後20MB）に収まる目安
+const readBytes = async (file, a, b) => new Uint8Array(await file.slice(a, b).arrayBuffer());
+function lowerBound(arr, x, n) { let lo = 0, hi = n; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < x) lo = m + 1; else hi = m; } return lo; }
+
+// --- MP4 / M4A ---
+function mp4Boxes(u8, start, end) {
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength), out = []; let o = start;
+  while (o + 8 <= end) {
+    let size = dv.getUint32(o), hdr = 8; const type = String.fromCharCode(u8[o + 4], u8[o + 5], u8[o + 6], u8[o + 7]);
+    if (size === 1) { size = Number(dv.getBigUint64(o + 8)); hdr = 16; } else if (size === 0) size = end - o;
+    if (size < hdr || o + size > end) break;
+    out.push({ type, start: o + hdr, end: o + size }); o += size;
+  }
+  return out;
+}
+const mp4Child = (u8, b, t) => b && mp4Boxes(u8, b.start, b.end).find(x => x.type === t);
+async function parseMp4(file) {
+  let off = 0, moov = null;
+  while (off + 8 <= file.size) {
+    const h = await readBytes(file, off, Math.min(file.size, off + 16)), dv = new DataView(h.buffer);
+    let size = dv.getUint32(0), hdr = 8; const type = String.fromCharCode(h[4], h[5], h[6], h[7]);
+    if (size === 1) { size = Number(dv.getBigUint64(8)); hdr = 16; } else if (size === 0) size = file.size - off;
+    if (size < hdr) break;
+    if (type === 'moov') { moov = await readBytes(file, off + hdr, off + size); break; }
+    off += size;
+  }
+  if (!moov) throw new Error('mp4: moov not found');
+  const u8 = moov, dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const traks = mp4Boxes(u8, 0, u8.length).filter(b => b.type === 'trak');
+  for (const trak of traks) {
+    const mdia = mp4Child(u8, trak, 'mdia'), hdlr = mp4Child(u8, mdia, 'hdlr');
+    if (!hdlr || String.fromCharCode(...u8.subarray(hdlr.start + 8, hdlr.start + 12)) !== 'soun') continue;
+    const mdhd = mp4Child(u8, mdia, 'mdhd'), v = u8[mdhd.start];
+    const timescale = dv.getUint32(mdhd.start + (v === 1 ? 20 : 12));
+    const stbl = mp4Child(u8, mp4Child(u8, mdia, 'minf'), 'stbl');
+    const stsd = mp4Child(u8, stbl, 'stsd');
+    const entry = mp4Boxes(u8, stsd.start + 8, stsd.end)[0];
+    if (!entry || entry.type !== 'mp4a') throw new Error('mp4: codec ' + (entry && entry.type));
+    const sver = dv.getUint16(entry.start + 8);
+    const kidsAt = entry.start + 28 + (sver === 1 ? 16 : sver === 2 ? 36 : 0);
+    const kids = mp4Boxes(u8, kidsAt, entry.end);
+    let esds = kids.find(b => b.type === 'esds');
+    if (!esds) { const wave = kids.find(b => b.type === 'wave'); esds = mp4Child(u8, wave, 'esds'); }
+    if (!esds) throw new Error('mp4: esds not found');
+    // AudioSpecificConfig を探す
+    let p = esds.start + 4, asc = null;
+    while (p < esds.end && !asc) {
+      const tag = u8[p++]; let len = 0;
+      for (let i = 0; i < 4; i++) { const b = u8[p++]; len = (len << 7) | (b & 0x7f); if (!(b & 0x80)) break; }
+      if (tag === 3) { p += 2; const fl = u8[p++]; if (fl & 0x80) p += 2; if (fl & 0x40) p += 1 + u8[p]; if (fl & 0x20) p += 2; }
+      else if (tag === 4) { if (u8[p] !== 0x40 && u8[p] !== 0x66 && u8[p] !== 0x67 && u8[p] !== 0x68) throw new Error('mp4: not AAC'); p += 13; }
+      else if (tag === 5) asc = u8.subarray(p, p + len);
+      else p += len;
+    }
+    if (!asc || asc.length < 2) throw new Error('mp4: no AudioSpecificConfig');
+    let bit = 0; const rd = n => { let x = 0; for (let i = 0; i < n; i++, bit++) x = (x << 1) | ((asc[bit >> 3] >> (7 - (bit & 7))) & 1); return x; };
+    let aot = rd(5); if (aot === 31) aot = 32 + rd(6);
+    const sfi = rd(4); if (sfi === 15) throw new Error('mp4: explicit frequency');
+    const ch = rd(4);
+    if (aot === 5 || aot === 29) { rd(4); aot = rd(5); }
+    if (aot < 1 || aot > 4 || ch < 1 || ch > 7) throw new Error('mp4: unsupported AAC config');
+    // サンプル表
+    const stsz = mp4Child(u8, stbl, 'stsz'), stts = mp4Child(u8, stbl, 'stts'), stsc = mp4Child(u8, stbl, 'stsc');
+    const stco = mp4Child(u8, stbl, 'stco'), co64 = mp4Child(u8, stbl, 'co64');
+    const fixed = dv.getUint32(stsz.start + 4), n = dv.getUint32(stsz.start + 8);
+    const sizes = new Uint32Array(n);
+    for (let i = 0; i < n; i++) sizes[i] = fixed || dv.getUint32(stsz.start + 12 + i * 4);
+    const times = new Float64Array(n + 1); let t = 0, si = 0;
+    const ne = dv.getUint32(stts.start + 4);
+    for (let e = 0; e < ne; e++) { const c = dv.getUint32(stts.start + 8 + e * 8), d = dv.getUint32(stts.start + 12 + e * 8); for (let k = 0; k < c && si < n; k++) { times[si++] = t; t += d; } }
+    while (si < n) times[si++] = t;
+    times[n] = t;
+    const co = co64 || stco, nc = dv.getUint32(co.start + 4);
+    const chunkOff = i => co64 ? Number(dv.getBigUint64(co.start + 8 + i * 8)) : dv.getUint32(co.start + 8 + i * 4);
+    const offsets = new Float64Array(n);
+    const nsc = dv.getUint32(stsc.start + 4); let s = 0;
+    for (let e = 0; e < nsc; e++) {
+      const first = dv.getUint32(stsc.start + 8 + e * 12), spc = dv.getUint32(stsc.start + 12 + e * 12);
+      const last = e + 1 < nsc ? dv.getUint32(stsc.start + 8 + (e + 1) * 12) - 1 : nc;
+      for (let c = first; c <= last && s < n; c++) { let o = chunkOff(c - 1); for (let k = 0; k < spc && s < n; k++) { offsets[s] = o; o += sizes[s]; s++; } }
+    }
+    if (s < n || !n) throw new Error('mp4: sample table mismatch');
+    return { kind: 'aac', n, sizes, offsets, times, timescale, durSec: t / timescale, adts: { profile: aot - 1, sfi, ch } };
+  }
+  throw new Error('mp4: no audio track');
+}
+async function adtsSlice(file, src, t0, t1) {
+  const ts = src.timescale, i0 = lowerBound(src.times, t0 * ts, src.n), i1 = lowerBound(src.times, t1 * ts, src.n);
+  let total = 0; for (let i = i0; i < i1; i++) total += src.sizes[i] + 7;
+  const out = new Uint8Array(total), { profile, sfi, ch } = src.adts; let w = 0, i = i0;
+  while (i < i1) {
+    const a = src.offsets[i]; let b = a + src.sizes[i], j = i + 1;
+    while (j < i1 && src.offsets[j] >= b && src.offsets[j] - b <= 262144 && src.offsets[j] + src.sizes[j] - a <= 8 << 20) { b = src.offsets[j] + src.sizes[j]; j++; }
+    const buf = await readBytes(file, a, b);
+    for (let k = i; k < j; k++) {
+      const len = src.sizes[k] + 7;
+      out[w] = 0xFF; out[w + 1] = 0xF1; out[w + 2] = (profile << 6) | (sfi << 2) | (ch >> 2);
+      out[w + 3] = ((ch & 3) << 6) | (len >> 11); out[w + 4] = (len >> 3) & 0xFF; out[w + 5] = ((len & 7) << 5) | 0x1F; out[w + 6] = 0xFC;
+      out.set(buf.subarray(src.offsets[k] - a, src.offsets[k] - a + src.sizes[k]), w + 7); w += len;
+    }
+    i = j;
+  }
+  return out;
+}
+
+// --- MP3 ---
+const MP3_BR = { 1: { 1: [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448], 2: [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384], 3: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320] },
+  2: { 1: [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256], 2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160], 3: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160] } };
+const MP3_SR = { 1: [44100, 48000, 32000], 2: [22050, 24000, 16000], 25: [11025, 12000, 8000] };
+function mp3Frame(b0, b1, b2) {
+  if (b0 !== 0xFF || (b1 & 0xE0) !== 0xE0) return null;
+  const vb = (b1 >> 3) & 3, lb = (b1 >> 1) & 3, bri = b2 >> 4, sri = (b2 >> 2) & 3, pad = (b2 >> 1) & 1;
+  if (vb === 1 || lb === 0 || bri === 0 || bri === 15 || sri === 3) return null;
+  const ver = vb === 3 ? 1 : vb === 2 ? 2 : 25, layer = 4 - lb, br = MP3_BR[ver === 1 ? 1 : 2][layer][bri] * 1000, sr = MP3_SR[ver][sri];
+  if (layer === 1) return { len: (Math.floor(12 * br / sr) + pad) * 4, dur: 384 / sr };
+  const low = layer === 3 && ver !== 1;
+  return { len: Math.floor((low ? 72 : 144) * br / sr) + pad, dur: (low ? 576 : 1152) / sr };
+}
+async function parseMp3(file) {
+  let pos = 0;
+  const h = await readBytes(file, 0, Math.min(file.size, 10));
+  if (h[0] === 0x49 && h[1] === 0x44 && h[2] === 0x33) pos = 10 + (((h[6] & 0x7f) << 21) | ((h[7] & 0x7f) << 14) | ((h[8] & 0x7f) << 7) | (h[9] & 0x7f)) + ((h[5] & 0x10) ? 10 : 0);
+  const offs = [], tms = []; let t = 0, buf = null, bs = 0, lost = true;
+  const BLK = 4 << 20;
+  while (pos + 4 <= file.size) {
+    if (!buf || pos + 8 > bs + buf.length) { bs = pos; buf = await readBytes(file, pos, Math.min(file.size, pos + BLK)); }
+    const i = pos - bs, f = mp3Frame(buf[i], buf[i + 1], buf[i + 2]);
+    let ok = !!f && f.len > 4 && pos + f.len <= file.size;
+    if (ok && lost) { const j = i + f.len; if (j + 3 <= buf.length) ok = !!mp3Frame(buf[j], buf[j + 1], buf[j + 2]) || pos + f.len >= file.size - 128; }
+    if (ok && !offs.length && !t) { // 先頭の「Xing/Info/VBRI」情報フレームはファイル全体の長さを持つので送らない
+      const tag = String.fromCharCode(...buf.subarray(i + 4, i + Math.min(f.len, 48)));
+      if (/Xing|Info|VBRI/.test(tag)) { pos += f.len; lost = false; continue; }
+    }
+    if (ok) { offs.push(pos); tms.push(t); t += f.dur; pos += f.len; lost = false; }
+    else { pos++; lost = true; }
+    if (offs.length % 20000 === 0 && !lost) await sleep(0);
+  }
+  if (offs.length < 10) throw new Error('mp3: no frames');
+  return { kind: 'mp3', offs, tms, endPos: pos, durSec: t };
+}
+
+// --- WAV ---
+async function parseWav(file) {
+  const u8 = await readBytes(file, 0, Math.min(file.size, 1 << 16)), dv = new DataView(u8.buffer);
+  let o = 12, fmt = null, src = null;
+  while (o + 8 <= u8.length) {
+    const id = String.fromCharCode(u8[o], u8[o + 1], u8[o + 2], u8[o + 3]), size = dv.getUint32(o + 4, true);
+    if (id === 'fmt ') {
+      let tag = dv.getUint16(o + 8, true); if (tag === 0xFFFE && size >= 26) tag = dv.getUint16(o + 32, true);
+      fmt = { tag, ch: dv.getUint16(o + 10, true), sr: dv.getUint32(o + 12, true), bits: dv.getUint16(o + 22, true) };
+    } else if (id === 'data' && fmt) {
+      const dataStart = o + 8, dataSize = (!size || size === 0xFFFFFFFF || dataStart + size > file.size) ? file.size - dataStart : size;
+      src = { kind: 'pcm', ...fmt, dataStart, dataSize };
+      break;
+    }
+    o += 8 + size + (size & 1);
+  }
+  if (!src || !src.ch || !src.sr) throw new Error('wav: no data');
+  if (!((src.tag === 1 && [8, 16, 24, 32].includes(src.bits)) || (src.tag === 3 && src.bits === 32))) throw new Error('wav: unsupported format');
+  src.durSec = Math.floor(src.dataSize / (src.ch * src.bits / 8)) / src.sr;
+  return src;
+}
+function pcmReader(src) {
+  const B = src.bits / 8;
+  if (src.tag === 3) return (dv, o) => dv.getFloat32(o, true);
+  if (B === 1) return (dv, o) => (dv.getUint8(o) - 128) / 128;
+  if (B === 2) return (dv, o) => dv.getInt16(o, true) / 32768;
+  if (B === 3) return (dv, o) => (((dv.getUint8(o) | (dv.getUint8(o + 1) << 8) | (dv.getUint8(o + 2) << 16)) << 8) >> 8) / 8388608;
+  return (dv, o) => dv.getInt32(o, true) / 2147483648;
+}
+async function pcmSlice(file, src, t0, t1) {
+  const B = src.bits / 8, fb = B * src.ch, total = Math.floor(src.dataSize / fb), get = pcmReader(src);
+  let f = Math.max(0, Math.floor(t0 * src.sr)); const fEnd = Math.min(total, Math.floor(t1 * src.sr));
+  const enc = makeEnc(), rs = makeResampler(src.sr), step = src.sr * 10;
+  while (f < fEnd) {
+    const n = Math.min(step, fEnd - f), u8 = await readBytes(file, src.dataStart + f * fb, src.dataStart + (f + n) * fb);
+    const dv = new DataView(u8.buffer), mono = new Float32Array(n);
+    for (let i = 0; i < n; i++) { let s = 0; for (let c = 0; c < src.ch; c++) s += get(dv, i * fb + c * B); mono[i] = s / src.ch; }
+    enc.push(rs(mono)); f += n; await sleep(0);
+  }
+  return { blob: enc.end(), mime: 'audio/mp3' };
+}
+
+// --- ブラウザでの展開（その他の形式・大きすぎる部分） ---
+async function decodeMono16k(arrayBuffer) {
+  const Ctx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const ctx = new Ctx(1, RATE, RATE);
+  const buf = await new Promise((res, rej) => { const p = ctx.decodeAudioData(arrayBuffer, res, rej); if (p && p.then) p.then(res, rej); });
+  const n = buf.length, out = new Float32Array(n);
+  for (let c = 0; c < buf.numberOfChannels; c++) { const d = buf.getChannelData(c); for (let i = 0; i < n; i++) out[i] += d[i] / buf.numberOfChannels; }
+  return { data: out, rate: buf.sampleRate };
+}
+async function encodeMono(f32, rate) {
+  const enc = makeEnc(), rs = makeResampler(rate), step = rate * 10;
+  for (let o = 0; o < f32.length; o += step) { enc.push(rs(f32.subarray(o, o + step))); await sleep(0); }
+  return { blob: enc.end(), mime: 'audio/mp3' };
+}
+async function shrink(u8) { const d = await decodeMono16k(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)); return encodeMono(d.data, d.rate); }
+
+async function openAudio(file) {
+  const h = await readBytes(file, 0, Math.min(file.size, 12)), s4 = o => String.fromCharCode(...h.subarray(o, o + 4));
+  try {
+    if (s4(4) === 'ftyp') return await parseMp4(file);
+    if ((s4(0) === 'RIFF' || s4(0) === 'RF64') && s4(8) === 'WAVE') return await parseWav(file);
+    if ((h[0] === 0x49 && h[1] === 0x44 && h[2] === 0x33) || (h[0] === 0xFF && (h[1] & 0xE0) === 0xE0) || /\.mp3$/i.test(file.name)) return await parseMp3(file);
+  } catch (e) { console.warn('[Parrot] そのまま切り出せないため展開して読み込みます:', e.message); }
+  if (file.size > 400 * 1024 * 1024) throw new Error('too big');
+  const d = await decodeMono16k(await file.arrayBuffer());
+  return { kind: 'f32', data: d.data, rate: d.rate, durSec: d.data.length / d.rate };
+}
+async function cutPart(file, src, t0, t1) {
+  if (src.kind === 'aac') { const u8 = await adtsSlice(file, src, t0, t1); return u8.length <= MAX_INLINE ? { blob: new Blob([u8], { type: 'audio/aac' }), mime: 'audio/aac' } : shrink(u8); }
+  if (src.kind === 'mp3') {
+    const n = src.offs.length, i0 = lowerBound(src.tms, t0, n), i1 = lowerBound(src.tms, t1, n);
+    const u8 = await readBytes(file, src.offs[i0], i1 < n ? src.offs[i1] : src.endPos);
+    return u8.length <= MAX_INLINE ? { blob: new Blob([u8], { type: 'audio/mpeg' }), mime: 'audio/mp3' } : shrink(u8);
+  }
+  if (src.kind === 'pcm') return pcmSlice(file, src, t0, t1);
+  return encodeMono(src.data.subarray(Math.floor(t0 * src.rate), Math.floor(t1 * src.rate)), src.rate);
+}
+
+async function importFile(file) {
+  if (!getKey()) { openSettings(true); toast('はじめにAPIキーを設定してください'); return; }
+  if (R || S.importing) { toast('録音中・読み込み中は使えません'); return; }
+  if (typeof lamejs === 'undefined') { toast('音声変換の部品を読み込めませんでした。ページを再読み込みしてください'); return; }
+  S.importing = { done: 0, total: 0 }; render();
+  let src;
+  try { src = await openAudio(file); }
+  catch (e) {
+    S.importing = null; render();
+    toast(e.message === 'too big' ? 'ファイルが大きすぎて読み込めませんでした。m4a や mp3 で保存したファイルを選んでください' : 'この音声ファイルは読み込めませんでした。m4a・mp3・wav のファイルを選んでください', 8000);
+    return;
+  }
+  const dur = src.durSec;
+  if (!(dur >= 1)) { S.importing = null; render(); toast('音声が短すぎるか、中身が空のファイルです'); return; }
+  const sess = {
+    id: 's' + Date.now().toString(36), title: $('#title').value.trim() || file.name.replace(/\.[^.]+$/, ''), participants: $('#participants').value.trim(),
+    createdAt: Date.now(), endedAt: Date.now(), recording: false, importing: true, source: 'file', fileName: file.name,
+    fileDate: file.lastModified || null, totalSec: dur, parts: [], renames: {}
+  };
+  S.session = sess; saveSession(sess); hideResume();
+  const bounds = []; for (let s = 0; s < dur; s += SEG_SEC) bounds.push(s);
+  if (bounds.length > 1 && dur - bounds[bounds.length - 1] < Math.min(120, SEG_SEC / 3)) bounds.pop(); // 短すぎる最後の切れ端は前のパートに含める
+  S.importing.total = bounds.length; render();
+  for (let k = 0; k < bounds.length; k++) {
+    const segStart = bounds[k], segEnd = k + 1 < bounds.length ? bounds[k + 1] : dur, st = Math.max(0, segStart - (k ? OVERLAP_SEC : 0));
+    S.importing.done = k; renderParts();
+    const part = { idx: k, startSec: segStart, durSec: segEnd - segStart, overlapSec: segStart - st, status: 'queued', attempts: 0 };
+    try {
+      const cut = await cutPart(file, src, st, segEnd);
+      part.mime = cut.mime;
+      blobCache.set(bkey(sess.id, k, 'api'), cut.blob); await db.putBlob(bkey(sess.id, k, 'api'), cut.blob);
+    } catch (e) {
+      console.warn('[Parrot] cut failed', e);
+      part.status = 'failed'; part.error = 'この部分の音声を切り出せませんでした。ファイルを m4a か mp3 で保存し直して試してください。';
+    }
+    sess.parts.push(part); saveSession(sess); renderSession(); pump();
+  }
+  sess.importing = false; S.importing = null; saveSession(sess);
+  $('#title').value = ''; $('#participants').value = ''; $('#fileInput').value = '';
+  render(); refreshHistory();
+}
 
 /* ====== transcription ====== */
 function lastDoneBefore(sess, idx) {
@@ -965,10 +1290,10 @@ function classifyError(status, data, attempt) {
   if (status === 413) return { kind: 'fatal', msg: '音声が大きすぎて送れませんでした。' };
   return { kind: 'fatal', msg: 'エラー：' + msg };
 }
-async function callGemini(b64, prompt, attempt, model) {
+async function callGemini(b64, prompt, attempt, model, mime) {
   const body = {
     systemInstruction: { parts: [{ text: SYS }] },
-    contents: [{ role: 'user', parts: [{ inlineData: { mimeType: 'audio/mp3', data: b64 } }, { text: prompt }] }],
+    contents: [{ role: 'user', parts: [{ inlineData: { mimeType: mime || 'audio/mp3', data: b64 } }, { text: prompt }] }],
     generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA }
   };
   if (/^gemini-(1|2)\./.test(model)) body.generationConfig.temperature = 0.2;
@@ -1022,7 +1347,7 @@ async function transcribePart(sess, part) {
     }
     part.status = 'processing'; part.model = model; part.error = null; part.attempts = (part.attempts || 0) + 1; saveSession(sess); renderParts();
     let r;
-    try { r = await callGemini(b64, buildPrompt(sess, part), part.attempts, model); }
+    try { r = await callGemini(b64, buildPrompt(sess, part), part.attempts, model, part.mime); }
     catch (e) { r = { kind: 'fatal', msg: String(e.message || e) }; }
     if (r.kind === 'ok') {
       const chars = r.data.paragraphs.reduce((n, p) => n + p.text.length, 0);
@@ -1092,7 +1417,9 @@ function speakerLabels(sess) {
 const docTitle = sess => (sess.title || '').trim() || `会議記録（${new Date(sess.createdAt).getMonth() + 1}月${new Date(sess.createdAt).getDate()}日）`;
 function metaLines(sess) {
   const end = sess.endedAt || (sess.createdAt + sess.totalSec * 1000);
-  const L = [['日時', `${dateJa(sess.createdAt)} ${hm(sess.createdAt)}〜${hm(end)}`], ['録音時間', durJa(sess.totalSec)]];
+  const L = sess.source === 'file'
+    ? [...(sess.fileDate ? [['日付', dateJa(sess.fileDate)]] : []), ['音声ファイル', sess.fileName], ['録音時間', durJa(sess.totalSec)]]
+    : [['日時', `${dateJa(sess.createdAt)} ${hm(sess.createdAt)}〜${hm(end)}`], ['録音時間', durJa(sess.totalSec)]];
   if (sess.participants) L.push(['参加者', sess.participants.split(/[\n,、，]+/).map(s => s.trim()).filter(Boolean).join('、')]);
   return L;
 }
@@ -1210,7 +1537,10 @@ function renderRecorder() {
   $('#recLabel').textContent = rec ? '録音を停止' : (S.session && !S.session.recording ? '新しく録音を始める' : '録音を開始');
   $('#recTime').classList.toggle('hidden', !rec);
   $('#recWarn').classList.toggle('hidden', !rec);
+  $('#recWarn').textContent = isIOS ? '画面を消したり、ほかのアプリに切り替えたりすると録音が止まります。画面をつけたままにしてください（長い会議はボイスメモでの録音がおすすめです）' : '録音中はこのタブを閉じたり、PCをスリープさせたりしないでください';
   $('#prefields').classList.toggle('hidden', rec);
+  $('#recBtn').disabled = !!S.importing; $('#btnImport').disabled = !!S.importing;
+  if (S.importing) { $('#recLabel').textContent = '音声ファイルを読み込み中…'; $('#recSub').textContent = '読み込みながら、準備できたパートから順に文字起こしします'; $('#ringProg').style.strokeDashoffset = 590.6; return; }
   if (!rec) {
     $('#recSub').textContent = `ボタンを押すと録音が始まり、${SEG_SEC >= 60 ? Math.round(SEG_SEC / 60) + '分' : SEG_SEC + '秒'}ごとに自動で文字起こしします`;
     $('#ringProg').style.strokeDashoffset = 590.6;
@@ -1233,6 +1563,7 @@ function renderSession() {
   const anyDone = sess.parts.some(p => p.status === 'done');
   ['#btnDocx', '#btnMd', '#btnCopy'].forEach(s => { $(s).disabled = !anyDone; });
   $('#btnAudio').disabled = !sess.parts.length;
+  $('#btnAudio').classList.toggle('hidden', sess.source === 'file');
 }
 function renderParts() {
   const sess = S.session; if (!sess) return;
@@ -1253,7 +1584,7 @@ function renderParts() {
       case 'failed': pill = '<span class="pill bad">失敗</span>'; msg = `<div class="p-msg bad">${esc(p.error || '')}</div>`; acts = `<button class="btn small" data-retry="${p.idx}">再試行</button>`; break;
     }
     return `<li><span class="p-num">${p.idx + 1}</span><div class="p-main"><div class="p-range">${range}</div>${msg}</div>${pill}${acts && !R ? `<div class="p-actions">${acts}</div>` : (acts && p.status !== 'done' ? `<div class="p-actions">${acts}</div>` : '')}</li>`;
-  }).join('') + (R ? `<li><span class="p-num">${sess.parts.length + 1}</span><div class="p-main"><div class="p-range">${clock(R.partStartSec)}〜</div></div><span class="pill rec">録音中</span></li>` : '');
+  }).join('') + (S.importing && S.importing.total !== undefined && sess.importing && sess.parts.length < Math.max(1, S.importing.total) ? `<li><span class="p-num">${sess.parts.length + 1}</span><div class="p-main"><div class="p-range">音声を準備しています</div></div><span class="pill busy"><span class="spin"></span>${S.importing.total ? `${sess.parts.length + 1} / ${S.importing.total}` : '読み込み中'}</span></li>` : '') + (R ? `<li><span class="p-num">${sess.parts.length + 1}</span><div class="p-main"><div class="p-range">${clock(R.partStartSec)}〜</div></div><span class="pill rec">録音中</span></li>` : '');
   $('#parts').innerHTML = html || '';
   $('#retryAllRow').classList.toggle('hidden', !!R || sess.parts.filter(p => p.status === 'failed').length < 2);
 }
@@ -1291,11 +1622,12 @@ function hideResume() { $('#resume').classList.add('hidden'); }
 function normalize(sess) {
   let note = '';
   sess.parts.forEach(p => { if (['processing', 'waiting'].includes(p.status)) p.status = 'queued'; });
+  if (sess.importing) { sess.importing = false; note = 'ファイルの読み込み途中でページが閉じられたため、最後まで読み込めていません。必要ならもう一度ファイルを選んでください。'; }
   if (sess.recording) { sess.recording = false; sess.endedAt = sess.endedAt || (sess.createdAt + sess.totalSec * 1000); note = '録音中にページが閉じられたため、最後の区切り以降の音声は残っていません。'; }
   return note;
 }
 function openSession(sess, quiet) {
-  if (R || S.busy) { toast('録音中・文字起こし中は切り替えられません'); return; }
+  if (R || S.busy || S.importing) { toast('録音中・文字起こし中・読み込み中は切り替えられません'); return; }
   const note = normalize(sess);
   S.session = sess; saveSession(sess);
   const q = sess.parts.filter(p => p.status === 'queued').length;
@@ -1310,7 +1642,7 @@ async function refreshHistory() {
   $('#history').classList.toggle('hidden', !list.length);
   $('#histList').innerHTML = list.map(s => {
     const done = s.parts.length && s.parts.every(p => p.status === 'done');
-    return `<li><div><div class="h-title">${esc(docTitle(s))}</div><div class="h-meta">${dateJa(s.createdAt)} ${hm(s.createdAt)} · ${durJa(s.totalSec)}${done ? '' : ' · 未完了あり'}</div></div>
+    return `<li><div><div class="h-title">${esc(docTitle(s))}</div><div class="h-meta">${dateJa(s.createdAt)} ${hm(s.createdAt)} · ${durJa(s.totalSec)}${s.source === 'file' ? ' · 音声ファイル' : ''}${done ? '' : ' · 未完了あり'}</div></div>
       <div class="row"><button class="btn small" data-open="${s.id}">開く</button><button class="btn quiet small" data-del="${s.id}">削除</button></div></li>`;
   }).join('');
 }
@@ -1371,6 +1703,8 @@ async function testModel() {
 
 /* ====== events ====== */
 $('#recBtn').addEventListener('click', () => R ? stopRecording() : startRecording());
+$('#btnImport').addEventListener('click', () => { if (!getKey()) { openSettings(true); toast('はじめにAPIキーを設定してください'); return; } $('#fileInput').click(); });
+$('#fileInput').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; if (f) importFile(f); });
 $('#btnSettings').addEventListener('click', () => openSettings());
 $('#btnCloseSettings').addEventListener('click', () => { $('#settings').classList.add('hidden'); $('#btnSettings').setAttribute('aria-expanded', 'false'); });
 $('#btnShowKey').addEventListener('click', e => { const i = $('#apiKey'); const show = i.type === 'password'; i.type = show ? 'text' : 'password'; e.target.textContent = show ? '隠す' : '表示'; });
@@ -1415,8 +1749,8 @@ $('#parts').addEventListener('click', e => {
 $('#btnRetryAll').addEventListener('click', retryAllFailed);
 $('#btnResume').addEventListener('click', () => { if (!getKey()) { openSettings(true); return; } hideResume(); pump(); });
 
-$('#btnMd').addEventListener('click', () => { const s = S.session; download(new Blob([toMarkdown(s)], { type: 'text/markdown;charset=utf-8' }), fileBase(s) + '.md'); });
-$('#btnDocx').addEventListener('click', () => { const s = S.session; download(toDocx(s), fileBase(s) + '.docx'); });
+$('#btnMd').addEventListener('click', () => { const s = S.session; saveFile(new Blob([toMarkdown(s)], { type: 'text/markdown' }), fileBase(s) + '.md'); });
+$('#btnDocx').addEventListener('click', () => { const s = S.session; saveFile(toDocx(s), fileBase(s) + '.docx'); });
 $('#btnCopy').addEventListener('click', async () => {
   const s = S.session, html = toHtml(s), md = toMarkdown(s);
   try {
@@ -1430,7 +1764,7 @@ $('#btnAudio').addEventListener('click', async () => {
   const s = S.session, blobs = [];
   for (const p of s.parts) { const b = await getBlob(s.id, p.idx, 'plain'); if (b) blobs.push(b); }
   if (!blobs.length) { toast('音声データが見つかりません'); return; }
-  download(new Blob(blobs, { type: 'audio/mpeg' }), fileBase(s) + '_録音.mp3');
+  saveFile(new Blob(blobs, { type: 'audio/mpeg' }), fileBase(s) + '_録音.mp3');
 });
 $('#histList').addEventListener('click', async e => {
   const b = e.target.closest('button'); if (!b) return;
@@ -1438,7 +1772,7 @@ $('#histList').addEventListener('click', async e => {
   if (b.dataset.open) { const s = list.find(x => x.id === b.dataset.open); if (s) openSession(s); }
   if (b.dataset.del) {
     const s = list.find(x => x.id === b.dataset.del); if (!s) return;
-    if (R && S.session && S.session.id === s.id) { toast('録音中の記録は削除できません'); return; }
+    if ((R || S.importing) && S.session && S.session.id === s.id) { toast('録音中・読み込み中の記録は削除できません'); return; }
     if (S.busy && S.session && S.session.id === s.id) { toast('文字起こし中の記録は削除できません'); return; }
     if (!confirm(`「${docTitle(s)}」を削除しますか？（音声も消えます）`)) return;
     await db.delSession(s.id); await db.delBlobs(s.id);
