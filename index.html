@@ -634,6 +634,9 @@ const SYS = `あなたは会議録音の「逐語文字起こし」専門の書�
  ・意味を持たないフィラー（間投詞として使われた「えー」「えっと」「あの」「あのー」「まあ」「その」「うーん」「なんか」など）
  ・すぐに言い直された言葉の断片（例：「こん、今週の」→「今週の」）
  それ以外の言葉は削除しない。
+ 例：「えー、あのー、来週の、えっと、行事についてですが」→「来週の行事についてですが」
+ 例：「まあ、うーん、そうですね、えーと、資料を見てください」→「そうですね、資料を見てください」
+ フィラーは1つ残らず削除すること。とくに「えー」「えっと」「あのー」は絶対に書かない。
 3. 「はい」「うん」だけの相づちは、質問への返答など会話の流れに必要なときだけ残す。
 4. 聞き取れない箇所は推測で埋めず「［聞き取り不明］」と書く。
 5. 話された言語のまま書く（英語の発言は英語のまま）。日本語は句読点を適切に付け、漢字かな交じりの読みやすい表記にする。
@@ -721,6 +724,24 @@ function download(blob, name) {
 }
 function blobToB64(blob) {
   return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+}
+
+/* ====== filler cleanup (AIが消し残したフィラーをアプリ側でも取り除く) ====== */
+const FB = '(^|[、，,。．！？!?\\s「『（(])';
+const FILLER_RES = [
+  // いつでもフィラーと判断できるもの
+  new RegExp(FB + '(?:えーっと|えーと|えっと|ええと|えーー*っと|あのー+|そのー+|うーん+|うーむ|んーー*)[、，,]?\\s*', 'g'),
+  // 読点が続くときだけフィラーと判断するもの（「あの人」「その件」「まあまあ」などは残す）
+  new RegExp(FB + '(?:えー+|ええ|あの|その|まあ|まー+|あー+|うー+)[、，,]\\s*', 'g'),
+  // 英語のフィラー
+  /(^|[\s,.、。!?])(?:um+|uh+|uhm|erm|er)(?=[\s,.、。!?]|$)[,、]?\s*/gi
+];
+function cleanFillers(t) {
+  let s = String(t);
+  if (/^(?:えー+|ええと|えっと|えーと|あのー*|そのー*|うーん+|んー+|まあ|um+|uh+)[。、．.]?$/i.test(s.trim())) return '';
+  for (let i = 0; i < 3; i++) { const before = s; FILLER_RES.forEach(re => { s = s.replace(re, '$1'); }); if (s === before) break; }
+  return s.replace(/[、，,]{2,}/g, '、').replace(/[、，,]([。．！？!?」』）)])/g, '$1').replace(/([。．！？!?「『（(])[、，,]/g, '$1')
+    .replace(/^[\s、，,。．]+/, '').replace(/[ \t]{2,}/g, ' ').replace(/(^|[.!?]\s+)([a-z])/g, (m, a, b) => a + b.toUpperCase()).trim();
 }
 
 /* ====== storage (IndexedDB) ====== */
@@ -1059,7 +1080,7 @@ const dispName = (sess, label) => ((sess.renames && sess.renames[label]) || '').
 function items(sess) {
   const out = [];
   for (const p of sess.parts) {
-    if (p.status === 'done' && p.result) p.result.paragraphs.forEach(x => out.push(x));
+    if (p.status === 'done' && p.result) p.result.paragraphs.forEach(x => { const text = cleanFillers(x.text); if (text) out.push({ speaker: x.speaker, text }); });
     else out.push({ gap: true, part: p });
   }
   return out;
