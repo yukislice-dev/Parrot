@@ -211,7 +211,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:0 0 30px}
         <button class="btn" id="btnTestModel">使えるか確認</button>
       </div>
       <span class="help" id="modelTest"></span>
-      <span class="help">一覧には、無料で使えて、あなたのキーで実際に使えるモデルだけを出しています。「高精度」は文字起こしの質重視、「軽量」は1日に使える回数に余裕があります。</span>
+      <span class="help">一覧には、無料で使えて、あなたのキーで実際に使えるモデルだけを出しています。「高精度」は文字起こしの質重視、「軽量」は1日に使える回数に余裕があります。<br>選んだモデルが1日の上限に達したら、自動でほかの無料モデルに切り替えて続けます。</span>
       <div class="row" style="gap:12px;margin-top:2px">
         <label class="help" style="display:inline-flex;gap:6px;align-items:center;font-weight:400"><input type="checkbox" id="showAllModels">その他のモデルも表示する</label>
         <button class="btn quiet small" id="btnModels">一覧を更新</button>
@@ -268,6 +268,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:0 0 30px}
   <section id="sessionView" class="hidden">
     <div class="section-title">文字起こしの進み具合</div>
     <ul class="parts" id="parts"></ul>
+    <div class="row hidden" id="retryAllRow" style="margin-top:12px"><button class="btn" id="btnRetryAll">失敗したパートをまとめて再試行</button></div>
 
     <div id="spkWrap" class="hidden">
       <div class="section-title">話者名の置き換え</div>
@@ -679,6 +680,16 @@ const store = {
 };
 const getKey = () => (store.get('apiKey') || '').trim();
 const getModel = () => store.get('model') || DEFAULT_MODEL;
+// 無料枠の「1日の上限」はモデルごと・太平洋時間の0時（日本時間16〜17時）にリセット
+const ptDay = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date());
+function exhaustedToday() { try { const o = JSON.parse(store.get('exhausted') || '{}'); return o.day === ptDay() ? (o.models || []) : []; } catch (e) { return []; } }
+function markExhausted(m) { const l = exhaustedToday(); if (!l.includes(m)) l.push(m); store.set('exhausted', JSON.stringify({ day: ptDay(), models: l })); }
+function modelOrder() {
+  const avail = lastModels ? FREE_MODELS.filter(id => lastModels.some(x => x.id === id)) : FREE_MODELS.slice();
+  const pref = getModel(); return [pref, ...avail.filter(x => x !== pref)];
+}
+function pickModel(skip = []) { const ex = exhaustedToday(); return modelOrder().find(m => !ex.includes(m) && !skip.includes(m)) || null; }
+const ALL_OUT = '使える無料モデルがすべて今日の上限に達しました。日本時間の夕方（16〜17時ごろ）に枠が戻ったら「失敗したパートをまとめて再試行」を押してください。';
 
 function clock(sec) {
   sec = Math.max(0, Math.floor(sec));
@@ -916,10 +927,10 @@ function salvageJson(t) {
 }
 function classifyError(status, data, attempt) {
   const err = (data && data.error) || {}, msg = err.message || ('HTTP ' + status), details = err.details || [];
-  if (/limit: ?0\b/i.test(msg)) return { kind: 'fatal', msg: 'このモデルは無料枠では使えません。設定で「無料で使えるモデル」から選び直してください。' };
+  if (/limit: ?0\b/i.test(msg)) return { kind: 'daily', msg: 'このモデルは無料枠では使えません。設定で「無料で使えるモデル」から選び直してください。' };
   if (status === 429) {
     const daily = details.some(d => (d.violations || []).some(v => /PerDay/i.test(v.quotaId || ''))) || /per day|daily/i.test(msg);
-    if (daily) return { kind: 'fatal', msg: '今日の無料枠の上限に達しました。日本時間の夕方（16〜17時ごろ）に枠が戻ったら「再試行」を押してください。' };
+    if (daily) return { kind: 'daily', msg: '今日の無料枠の上限に達しました。日本時間の夕方（16〜17時ごろ）に枠が戻ったら「再試行」を押してください。' };
     const ri = details.find(d => /RetryInfo/.test(d['@type'] || ''));
     const w = ri && parseFloat(ri.retryDelay);
     return { kind: 'retry', wait: w ? w * 1000 + 2000 : 60000, msg: '一時的に利用回数の上限に達しました。少し待って自動で再送します。' };
@@ -931,8 +942,7 @@ function classifyError(status, data, attempt) {
   if (status === 413) return { kind: 'fatal', msg: '音声が大きすぎて送れませんでした。' };
   return { kind: 'fatal', msg: 'エラー：' + msg };
 }
-async function callGemini(b64, prompt, attempt) {
-  const model = getModel();
+async function callGemini(b64, prompt, attempt, model) {
   const body = {
     systemInstruction: { parts: [{ text: SYS }] },
     contents: [{ role: 'user', parts: [{ inlineData: { mimeType: 'audio/mp3', data: b64 } }, { text: prompt }] }],
@@ -950,7 +960,7 @@ async function callGemini(b64, prompt, attempt) {
   const cand = data && data.candidates && data.candidates[0];
   if (!cand) {
     const br = data && data.promptFeedback && data.promptFeedback.blockReason;
-    return br ? { kind: 'fatal', msg: `Geminiが処理を断りました（${br}）` } : { kind: 'retry', wait: 10000, msg: '応答が空でした。再送します。' };
+    return br ? { kind: 'block', msg: `Geminiがこのパートの処理を断りました（${br}）。時間をおいて再試行するか、設定で別のモデルを選んでください。` } : { kind: 'retry', wait: 10000, msg: '応答が空でした。再送します。' };
   }
   const text = ((cand.content && cand.content.parts) || []).filter(p => !p.thought).map(p => p.text || '').join('');
   let obj = null, truncated = false;
@@ -971,17 +981,27 @@ async function transcribePart(sess, part) {
   const blob = await getBlob(sess.id, part.idx, 'api');
   if (!blob) { part.status = 'failed'; part.error = 'このパートの音声データが見つかりません。'; saveSession(sess); return; }
   const b64 = await blobToB64(blob);
+  const skip = []; // 処理を断られたモデル（このパートだけ別モデルで試す）
   for (;;) {
-    part.status = 'processing'; part.attempts = (part.attempts || 0) + 1; saveSession(sess); renderParts();
+    const model = pickModel(skip);
+    if (!model) { part.status = 'failed'; part.error = skip.length ? `Geminiがこのパートの処理を断りました。時間をおいて再試行してください。` : ALL_OUT; saveSession(sess); render(); return; }
+    part.status = 'processing'; part.model = model; part.attempts = (part.attempts || 0) + 1; saveSession(sess); renderParts();
     let r;
-    try { r = await callGemini(b64, buildPrompt(sess, part), part.attempts); }
+    try { r = await callGemini(b64, buildPrompt(sess, part), part.attempts, model); }
     catch (e) { r = { kind: 'fatal', msg: String(e.message || e) }; }
     if (r.kind === 'ok') {
       const chars = r.data.paragraphs.reduce((n, p) => n + p.text.length, 0);
-      part.result = r.data; part.chars = chars; part.status = 'done'; part.error = null;
+      part.result = r.data; part.chars = chars; part.status = 'done'; part.error = null; part.doneModel = model;
       part.warn = r.truncated ? 'truncated' : (part.durSec > 180 && chars / (part.durSec / 60) < 40 ? 'short' : null);
       saveSession(sess); render(); return;
     }
+    if (r.kind === 'daily') { // このモデルは今日の上限 → 次の無料モデルへ自動で切り替え
+      markExhausted(model); part.attempts--;
+      const next = pickModel(skip);
+      if (next) toast(`「${model}」が今日の上限に達したため、「${next}」に切り替えて続けます`, 6000);
+      continue;
+    }
+    if (r.kind === 'block' && skip.length < 2) { skip.push(model); continue; }
     if (r.kind === 'retry' && part.attempts < MAX_ATTEMPTS) {
       part.status = 'waiting'; part.retryAt = Date.now() + r.wait; part.error = r.msg; saveSession(sess); renderParts();
       await sleep(r.wait); continue;
@@ -995,13 +1015,21 @@ async function pump() {
   const part = sess.parts.find(p => p.status === 'queued');
   if (!part || !getKey()) return;
   S.busy = true;
-  try { await transcribePart(sess, part); }
+  try {
+    await transcribePart(sess, part);
+    if (part.error === ALL_OUT) sess.parts.forEach(q => { if (q.status === 'queued') { q.status = 'failed'; q.error = ALL_OUT; } });
+  }
   catch (e) { part.status = 'failed'; part.error = String(e.message || e); saveSession(sess); }
   finally { S.busy = false; render(); setTimeout(pump, 0); if (!R && !sess.parts.some(p => p.status === 'queued')) refreshHistory(); }
 }
 function retryPart(idx) {
   const sess = S.session, p = sess && sess.parts[idx]; if (!p) return;
   p.status = 'queued'; p.attempts = 0; p.error = null;
+  saveSession(sess); renderSession(); pump();
+}
+function retryAllFailed() {
+  const sess = S.session; if (!sess) return;
+  sess.parts.forEach(p => { if (p.status === 'failed') { p.status = 'queued'; p.attempts = 0; p.error = null; } });
   saveSession(sess); renderSession(); pump();
 }
 
@@ -1171,12 +1199,13 @@ function renderParts() {
     let pill = '', msg = '', acts = '';
     switch (p.status) {
       case 'queued': pill = '<span class="pill">待機中</span>'; break;
-      case 'processing': pill = '<span class="pill busy"><span class="spin"></span>文字起こし中</span>'; break;
+      case 'processing': pill = '<span class="pill busy"><span class="spin"></span>文字起こし中</span>'; if (p.model) msg = `<div class="p-msg">${esc(p.model)}</div>`; break;
       case 'waiting': pill = `<span class="pill busy">再送まで ${clock(Math.max(0, (p.retryAt - Date.now()) / 1000))}</span>`; msg = `<div class="p-msg">${esc(p.error || '')}</div>`; break;
       case 'done':
         pill = `<span class="pill done">完了 · ${(p.chars || 0).toLocaleString()}字</span>`;
-        if (p.warn === 'short') { msg = '<div class="p-msg warn">⚠ 時間のわりに文字数が少なめです。無言の時間が長くなければ、要約された可能性があります。</div>'; acts = `<button class="btn small" data-retry="${p.idx}">やり直す</button>`; }
-        else if (p.warn === 'truncated') { msg = '<div class="p-msg warn">⚠ 出力が途中で切れています。最後の方が抜けている可能性があります。</div>'; acts = `<button class="btn small" data-retry="${p.idx}">やり直す</button>`; }
+        if (p.doneModel) msg = `<div class="p-msg">${esc(p.doneModel)}</div>`;
+        if (p.warn === 'short') { msg += '<div class="p-msg warn">⚠ 時間のわりに文字数が少なめです。無言の時間が長くなければ、要約された可能性があります。</div>'; acts = `<button class="btn small" data-retry="${p.idx}">やり直す</button>`; }
+        else if (p.warn === 'truncated') { msg += '<div class="p-msg warn">⚠ 出力が途中で切れています。最後の方が抜けている可能性があります。</div>'; acts = `<button class="btn small" data-retry="${p.idx}">やり直す</button>`; }
         else acts = `<button class="btn quiet small" data-redo="${p.idx}">やり直す</button>`;
         break;
       case 'failed': pill = '<span class="pill bad">失敗</span>'; msg = `<div class="p-msg bad">${esc(p.error || '')}</div>`; acts = `<button class="btn small" data-retry="${p.idx}">再試行</button>`; break;
@@ -1184,6 +1213,7 @@ function renderParts() {
     return `<li><span class="p-num">${p.idx + 1}</span><div class="p-main"><div class="p-range">${range}</div>${msg}</div>${pill}${acts && !R ? `<div class="p-actions">${acts}</div>` : (acts && p.status !== 'done' ? `<div class="p-actions">${acts}</div>` : '')}</li>`;
   }).join('') + (R ? `<li><span class="p-num">${sess.parts.length + 1}</span><div class="p-main"><div class="p-range">${clock(R.partStartSec)}〜</div></div><span class="pill rec">録音中</span></li>` : '');
   $('#parts').innerHTML = html || '';
+  $('#retryAllRow').classList.toggle('hidden', !!R || sess.parts.filter(p => p.status === 'failed').length < 2);
 }
 function speakerColor(sess, label) {
   const i = speakerLabels(sess).indexOf(label); return SPK_COLORS[(i < 0 ? 0 : i) % SPK_COLORS.length];
@@ -1340,6 +1370,7 @@ $('#parts').addEventListener('click', e => {
   if (b.dataset.retry) retryPart(Number(b.dataset.retry));
   if (b.dataset.redo && confirm(`パート${Number(b.dataset.redo) + 1}をもう一度文字起こししますか？`)) retryPart(Number(b.dataset.redo));
 });
+$('#btnRetryAll').addEventListener('click', retryAllFailed);
 $('#btnResume').addEventListener('click', () => { if (!getKey()) { openSettings(true); return; } hideResume(); pump(); });
 
 $('#btnMd').addEventListener('click', () => { const s = S.session; download(new Blob([toMarkdown(s)], { type: 'text/markdown;charset=utf-8' }), fileBase(s) + '.md'); });
