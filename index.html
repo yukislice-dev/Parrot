@@ -688,7 +688,9 @@ function modelOrder() {
   const avail = lastModels ? FREE_MODELS.filter(id => lastModels.some(x => x.id === id)) : FREE_MODELS.slice();
   const pref = getModel(); return [pref, ...avail.filter(x => x !== pref)];
 }
-function pickModel(skip = []) { const ex = exhaustedToday(); return modelOrder().find(m => !ex.includes(m) && !skip.includes(m)) || null; }
+const busyUntil = {}; // 混雑していたモデルは10分間あと回し
+function pickModel(skip = []) { const ex = exhaustedToday(), now = Date.now(); return modelOrder().find(m => !ex.includes(m) && !skip.includes(m) && !(busyUntil[m] > now)) || null; }
+const usableIgnoringBusy = skip => { const ex = exhaustedToday(); return modelOrder().filter(m => !ex.includes(m) && !skip.includes(m)); };
 const ALL_OUT = '使える無料モデルがすべて今日の上限に達しました。日本時間の夕方（16〜17時ごろ）に枠が戻ったら「失敗したパートをまとめて再試行」を押してください。';
 
 function clock(sec) {
@@ -935,7 +937,7 @@ function classifyError(status, data, attempt) {
     const w = ri && parseFloat(ri.retryDelay);
     return { kind: 'retry', wait: w ? w * 1000 + 2000 : 60000, msg: '一時的に利用回数の上限に達しました。少し待って自動で再送します。' };
   }
-  if (status >= 500) return { kind: 'retry', wait: Math.min(300000, 15000 * 2 ** Math.max(0, attempt - 1)), msg: 'Gemini側が混み合っています。自動で再送します。' };
+  if (status >= 500) return { kind: 'busy', msg: 'Gemini側が混み合っています。別のモデルに切り替えるか、少し待って再送します。' };
   if (/api key/i.test(msg) && status === 400) return { kind: 'fatal', msg: 'APIキーが正しくありません。設定で確認してください。' };
   if (status === 401 || status === 403) return { kind: 'fatal', msg: `APIキーが無効か、このモデルを使う権限がありません。（${msg}）` };
   if (status === 404) return { kind: 'fatal', msg: '選んだモデルが見つかりません。設定でモデルを選び直してください。' };
@@ -981,11 +983,23 @@ async function transcribePart(sess, part) {
   const blob = await getBlob(sess.id, part.idx, 'api');
   if (!blob) { part.status = 'failed'; part.error = 'このパートの音声データが見つかりません。'; saveSession(sess); return; }
   const b64 = await blobToB64(blob);
-  const skip = []; // 処理を断られたモデル（このパートだけ別モデルで試す）
+  const skip = [], busyHits = {}; let waits = 0;
+  const wait = async (ms, msg) => { part.status = 'waiting'; part.retryAt = Date.now() + ms; part.error = msg; saveSession(sess); renderParts(); await sleep(ms); };
   for (;;) {
     const model = pickModel(skip);
-    if (!model) { part.status = 'failed'; part.error = skip.length ? `Geminiがこのパートの処理を断りました。時間をおいて再試行してください。` : ALL_OUT; saveSession(sess); render(); return; }
-    part.status = 'processing'; part.model = model; part.attempts = (part.attempts || 0) + 1; saveSession(sess); renderParts();
+    if (!model) {
+      const left = usableIgnoringBusy(skip);
+      if (left.length && waits < 6) { // 全部「混雑中」なら、いちばん早く空くモデルまで待つ
+        waits++; const t = Math.min(...left.map(m => busyUntil[m] || 0)) - Date.now();
+        left.forEach(m => { delete busyUntil[m]; });
+        await wait(Math.max(15000, Math.min(60000, t)), 'どのモデルも混み合っています。少し待って再送します。'); continue;
+      }
+      part.status = 'failed';
+      part.error = left.length ? 'Geminiが混み合っていて処理できませんでした。しばらくしてから「再試行」を押してください。'
+        : skip.length ? 'Geminiがこのパートの処理を断りました。時間をおいて再試行してください。' : ALL_OUT;
+      saveSession(sess); render(); return;
+    }
+    part.status = 'processing'; part.model = model; part.error = null; part.attempts = (part.attempts || 0) + 1; saveSession(sess); renderParts();
     let r;
     try { r = await callGemini(b64, buildPrompt(sess, part), part.attempts, model); }
     catch (e) { r = { kind: 'fatal', msg: String(e.message || e) }; }
@@ -995,17 +1009,24 @@ async function transcribePart(sess, part) {
       part.warn = r.truncated ? 'truncated' : (part.durSec > 180 && chars / (part.durSec / 60) < 40 ? 'short' : null);
       saveSession(sess); render(); return;
     }
-    if (r.kind === 'daily') { // このモデルは今日の上限 → 次の無料モデルへ自動で切り替え
+    if (r.kind === 'daily') { // このモデルは今日の上限 → 次の無料モデルへ
       markExhausted(model); part.attempts--;
       const next = pickModel(skip);
       if (next) toast(`「${model}」が今日の上限に達したため、「${next}」に切り替えて続けます`, 6000);
       continue;
     }
-    if (r.kind === 'block' && skip.length < 2) { skip.push(model); continue; }
-    if (r.kind === 'retry' && part.attempts < MAX_ATTEMPTS) {
-      part.status = 'waiting'; part.retryAt = Date.now() + r.wait; part.error = r.msg; saveSession(sess); renderParts();
-      await sleep(r.wait); continue;
+    if (r.kind === 'busy') { // 混雑：同じモデルは1回だけ待って再送、2回目で別モデルへ
+      busyHits[model] = (busyHits[model] || 0) + 1;
+      if (busyHits[model] >= 2) {
+        busyUntil[model] = Date.now() + 10 * 60000;
+        const next = pickModel(skip);
+        if (next) toast(`「${model}」が混み合っているため、「${next}」に切り替えて続けます`, 6000);
+        continue;
+      }
+      await wait(10000, r.msg); continue;
     }
+    if (r.kind === 'block' && skip.length < 2) { skip.push(model); continue; }
+    if (r.kind === 'retry' && part.attempts < MAX_ATTEMPTS) { await wait(r.wait, r.msg); continue; }
     part.status = 'failed'; part.error = r.msg; saveSession(sess); render(); return;
   }
 }
