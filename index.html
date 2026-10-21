@@ -96,6 +96,8 @@ a{color:var(--sky)}
 .rec-time{font-family:var(--font-round);font-weight:700;font-size:44px;line-height:1.1;margin-top:10px;font-variant-numeric:tabular-nums}
 .rec-sub{color:var(--muted);font-size:14px;text-align:center}
 .rec-warn{margin-top:10px;font-size:13px;background:var(--sun-soft);border-radius:10px;padding:8px 14px;text-align:center}
+.alert{margin-top:12px;font-size:14px;line-height:1.7;background:var(--danger-soft);color:var(--ink);border:2px solid var(--scarlet);border-radius:12px;padding:12px 16px;text-align:left;max-width:520px}
+.alert b{color:var(--scarlet)}
 .prefields{width:100%;max-width:520px;margin-top:22px}
 .import{margin-top:22px;padding-top:18px;border-top:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
 .import .btn{display:inline-flex;align-items:center;gap:8px;padding:11px 18px;font-size:15px}
@@ -148,6 +150,17 @@ body{padding-bottom:env(safe-area-inset-bottom)}
 .doc-body .who{font-weight:700;display:inline-flex;align-items:center;gap:6px;margin-right:2px}
 .doc-body .gap{color:var(--muted);font-size:14px;background:var(--paper);border-radius:8px;padding:8px 12px}
 .doc-empty{color:var(--muted)}
+.sum-status{flex:1 1 200px;font-size:14px;line-height:1.6;padding-top:8px}
+.sum-status .bad{color:var(--scarlet)}
+.sum-note{font-size:13px;margin-top:2px}
+.sum-body h2{font-family:var(--font-round);font-size:18px;margin:1.5em 0 .5em;padding-bottom:4px;border-bottom:1px solid var(--line)}
+.sum-body h2:first-child{margin-top:.2em}
+.sum-body h3{font-size:16px;margin:1.1em 0 .3em}
+.sum-body p{margin:.4em 0 .6em}
+.sum-body ul,.sum-body ol{margin:.2em 0 .7em;padding-left:1.4em}
+.sum-body li{margin:.25em 0}
+.sum-body li > ul,.sum-body li > ol{margin:.2em 0 .2em}
+div.doc-title{margin:0}
 
 /* history */
 .history{margin:20px 0 60px}
@@ -259,6 +272,9 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:0 0 30px}
     <div class="rec-time hidden" id="recTime">0:00</div>
     <div class="rec-sub" id="recSub">ボタンを押すと録音が始まり、15分ごとに自動で文字起こしします</div>
     <div class="rec-warn hidden" id="recWarn">録音中はこのタブを閉じたり、PCをスリープさせたりしないでください</div>
+    <div class="alert hidden" id="wakeAlert" role="alert"><b>画面が自動で消えないように設定できませんでした。</b><br><span id="wakeAlertMsg"></span></div>
+    <div class="alert hidden" id="liveSilent" role="alert"><b>マイクの音が届いていません。</b>画面が消えていたり、マイクが止まっていたりしないか確認してください。</div>
+    <div class="alert hidden" id="gapAlert" role="alert"><p id="gapAlertMsg" style="margin:0"></p><button class="btn small" id="btnGapClose" type="button" style="margin-top:8px">閉じる</button></div>
 
     <div class="prefields" id="prefields">
       <div class="field">
@@ -299,7 +315,29 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:0 0 30px}
       <div class="speakers" id="speakers"></div>
     </div>
 
-    <div class="section-title">保存</div>
+    <div class="section-title">要点まとめ</div>
+    <p class="rec-sub" style="text-align:left;margin:-4px 0 10px">文字起こしの内容（会議・打ち合わせ・協議会・レッスンなど）をAIが判断して、要点を整理します。</p>
+    <div class="field">
+      <label for="sumHint">まとめ方の希望（任意）</label>
+      <input type="text" id="sumHint" placeholder="例：決定事項と担当を中心に／助言の内容をくわしく／練習方法を具体的に">
+    </div>
+    <div class="row" style="align-items:flex-start"><button class="btn primary" id="btnSum">要点まとめを作成</button><span class="help sum-status" id="sumStatus"></span></div>
+    <div id="sumOut" class="hidden">
+      <div class="exports">
+        <button class="btn primary" id="btnSumDocx">Word（.docx）で保存</button>
+        <button class="btn" id="btnSumMd">マークダウン（.md）で保存</button>
+        <button class="btn" id="btnSumCopy">書式付きでコピー</button>
+      </div>
+      <article class="doc">
+        <div class="doc-title" id="sumDocTitle"></div>
+        <p class="doc-meta" id="sumMeta"></p>
+        <p class="doc-meta sum-note">AIが文字起こしから作成した要点まとめです。正確な内容は文字起こしで確認してください。</p>
+        <hr>
+        <div class="doc-body sum-body" id="sumBody"></div>
+      </article>
+    </div>
+
+    <div class="section-title">文字起こしの保存</div>
     <div class="exports">
       <button class="btn primary" id="btnDocx">Word（.docx）で保存</button>
       <button class="btn" id="btnMd">マークダウン（.md）で保存</button>
@@ -872,6 +910,7 @@ async function startRecording() {
   if (typeof lamejs === 'undefined') { toast('録音用の部品を読み込めませんでした。ページを再読み込みしてください'); return; }
   if (S.busy || S.importing) { toast('前の文字起こし・読み込みが終わるまでお待ちください'); return; }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast(isIOS ? 'このブラウザでは録音できません。Safariで開いてください' : 'このブラウザでは録音できません。Chromeで開いてください'); return; }
+  startWakeVideo(); // 画面が消えないための予備策（タップした瞬間に始める必要がある）
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: true, autoGainControl: true } });
@@ -879,6 +918,7 @@ async function startRecording() {
     if (e.name === 'NotAllowedError') toast(isIOS ? 'マイクの使用が許可されていません。設定アプリ →「Safari」→「マイク」を「確認」か「許可」にしてください' : 'マイクの使用が許可されていません。アドレスバー左のアイコンからマイクを「許可」にしてください', 7000);
     else if (e.name === 'NotFoundError') toast('マイクが見つかりません。マイクが接続されているか確認してください', 6000);
     else toast('マイクを使えませんでした：' + e.message, 6000);
+    stopWakeVideo();
     return;
   }
   const ctx = new AudioContext();
@@ -900,7 +940,7 @@ async function startRecording() {
       node.onaudioprocess = ev => { if (port.onmessage) port.onmessage({ data: new Float32Array(ev.inputBuffer.getChannelData(0)) }); };
     } catch (e) {
       stream.getTracks().forEach(t => t.stop()); ctx.close();
-      toast('録音の準備に失敗しました：' + e.message, 6000); return;
+      stopWakeVideo(); toast('録音の準備に失敗しました：' + e.message, 6000); return;
     }
   }
   src.connect(node); node.connect(mute); mute.connect(ctx.destination);
@@ -908,18 +948,15 @@ async function startRecording() {
 
   const sess = {
     id: 's' + Date.now().toString(36), title: $('#title').value.trim(), participants: $('#participants').value.trim(),
-    createdAt: Date.now(), endedAt: null, recording: true, totalSec: 0, parts: [], renames: {}
+    createdAt: Date.now(), endedAt: null, recording: true, totalSec: 0, parts: [], renames: {}, gaps: []
   };
   S.session = sess;
-  R = { stream, ctx, src, node, port, resample: makeResampler(ctx.sampleRate), tail: makeTail(OVERLAP_SEC * RATE), totalSamples: 0, level: 0 };
+  R = { stream, ctx, src, node, port, resample: makeResampler(ctx.sampleRate), tail: makeTail(OVERLAP_SEC * RATE), totalSamples: 0, level: 0, lastAudioAt: 0, silentFrom: null };
   beginPart(false);
   port.onmessage = e => onAudio(e.data);
   stream.getAudioTracks()[0].addEventListener('ended', () => { if (R) { toast('マイクが切断されたため録音を終了しました。ここまでの録音は文字起こしされます', 7000); stopRecording(); } });
-  // iPhoneでは画面を消す・アプリを切り替えると音声の取り込みが止まる。戻ってきたら再開し、止まっていた時間を知らせる
-  const markPause = () => { if (R && !R.pausedAt) R.pausedAt = Date.now(); };
-  ctx.onstatechange = () => { if (ctx.state !== 'running') markPause(); };
-  stream.getAudioTracks()[0].addEventListener('mute', markPause);
-  acquireWake();
+  $('#gapAlert').classList.add('hidden');
+  acquireWake().then(ok => { if (R) { R.wakeOk = ok; renderRecorder(); } });
   saveSession(sess);
   hideResume();
   render();
@@ -930,6 +967,13 @@ function beginPart(withOverlap) {
 }
 function onAudio(f32) {
   if (!R) return;
+  // 音声が届かなかった時間を見つける（iPhoneで画面が消えたときなど）
+  const now = Date.now();
+  if (R.lastAudioAt && now - R.lastAudioAt > 4000) addGap(R.totalSamples / RATE, (now - R.lastAudioAt) / 1000);
+  R.lastAudioAt = now;
+  let peak = 0; for (let i = 0; i < f32.length; i += 8) { const a = f32[i] < 0 ? -f32[i] : f32[i]; if (a > peak) peak = a; }
+  if (peak < 1e-5) { if (R.silentFrom === null) R.silentFrom = R.totalSamples / RATE; }
+  else closeSilence();
   let sum = 0; for (let i = 0; i < f32.length; i += 4) sum += f32[i] * f32[i];
   R.level = Math.max(Math.sqrt(sum / (f32.length / 4)), R.level * 0.8);
   const s = R.resample(f32);
@@ -950,13 +994,14 @@ function finishPart() {
 }
 async function stopRecording() {
   if (!R) return;
+  closeSilence();
   const r = R; r.port.onmessage = null; if (r.node.onaudioprocess) r.node.onaudioprocess = null;
   if (r.partSamples >= RATE) finishPart();
   R = null;
   try { r.src.disconnect(); r.node.disconnect(); } catch (e) {}
   r.stream.getTracks().forEach(t => t.stop());
   r.ctx.close().catch(() => {});
-  releaseWake();
+  releaseWake(); stopWakeVideo();
   const sess = S.session;
   sess.recording = false; sess.endedAt = Date.now(); sess.totalSec = r.totalSamples / RATE;
   if (!sess.parts.length) { db.delSession(sess.id); S.session = null; toast('録音が短すぎたため保存しませんでした'); }
@@ -966,17 +1011,56 @@ async function stopRecording() {
 }
 
 let wakeLock = null;
-async function acquireWake() { try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { wakeLock = null; } }
-function releaseWake() { try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null; }
+async function acquireWake() {
+  try {
+    if (!('wakeLock' in navigator)) return false;
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; if (R && document.visibilityState === 'visible') setTimeout(acquireWake, 500); });
+    return true;
+  } catch (e) { wakeLock = null; return false; }
+}
+function releaseWake() { const w = wakeLock; wakeLock = null; try { w && w.release(); } catch (e) {} }
+// 予備策：画面外で無音の小さな動画を流し続けると、iPhoneは自動ロックしなくなる
+const WAKE_MP4 = 'data:video/mp4;base64,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bWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0wIGNxbT0wIGRlYWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS00IHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj0yIHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj00MC4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4yMACAAAAADGWIhAXznJigACX3gAEYIAcBGCAHARggBwEYIAcAAAAHQZo4C+c6gAEYIAcBGCAHARggBwEYIAcAAAAHQZpUAvnOoAEYIAcBGCAHARggBwEYIAcAAAAGQZpgFc51ARggBwEYIAcBGCAHARggBw==';
+let wakeVideo = null;
+function startWakeVideo() {
+  if (!isIOS && 'wakeLock' in navigator) return; // PCのChromeなどは通常の方法で十分
+  try {
+    if (!wakeVideo) {
+      wakeVideo = document.createElement('video');
+      wakeVideo.setAttribute('playsinline', ''); wakeVideo.setAttribute('webkit-playsinline', ''); wakeVideo.setAttribute('title', 'Parrot');
+      wakeVideo.loop = true; wakeVideo.src = WAKE_MP4;
+      Object.assign(wakeVideo.style, { position: 'fixed', left: '-100px', top: '-100px', width: '16px', height: '16px' });
+      wakeVideo.addEventListener('timeupdate', () => { if (wakeVideo.currentTime > 1) wakeVideo.currentTime = Math.random() * 0.5; });
+      document.body.appendChild(wakeVideo);
+    }
+    const p = wakeVideo.play(); if (p && p.catch) p.catch(() => {});
+  } catch (e) {}
+}
+function stopWakeVideo() { try { wakeVideo && wakeVideo.pause(); } catch (e) {} }
+
+function addGap(at, dur) {
+  const sess = S.session; if (!sess || dur < 8) return;
+  sess.gaps = sess.gaps || []; sess.gaps.push({ at, dur }); saveSession(sess);
+  showGapAlert();
+}
+function closeSilence() {
+  if (!R || R.silentFrom === null) return;
+  const from = R.silentFrom; R.silentFrom = null;
+  addGap(from, R.totalSamples / RATE - from);
+}
+const gapList = sess => (sess.gaps || []).map(g => `${clock(g.at)}から約${g.dur < 60 ? Math.round(g.dur) + '秒' : durJa(g.dur)}`).join('、');
+function showGapAlert() {
+  const sess = S.session; if (!sess || !(sess.gaps || []).length) return;
+  $('#gapAlertMsg').textContent = `録音できていない時間がありました（${gapList(sess)}）。画面が消えていたか、マイクが止まっていた可能性があります。`;
+  $('#gapAlert').classList.remove('hidden');
+  if (navigator.vibrate) try { navigator.vibrate(300); } catch (e) {}
+}
 document.addEventListener('visibilitychange', async () => {
-  if (!R) return;
-  if (document.visibilityState === 'hidden') { if (isIOS && !R.pausedAt) R.pausedAt = Date.now(); return; }
-  acquireWake();
+  if (!R || document.visibilityState !== 'visible') return;
+  if (!wakeLock) acquireWake();
+  startWakeVideo();
   try { if (R.ctx.state !== 'running') await R.ctx.resume(); } catch (e) {}
-  if (R && R.pausedAt) {
-    const sec = (Date.now() - R.pausedAt) / 1000; R.pausedAt = null;
-    if (sec > 3) toast(`画面が消えていた間（約${durJa(sec)}）は録音できていません。録音は続いています`, 8000);
-  }
 });
 window.addEventListener('beforeunload', e => {
   const pending = S.session && S.session.parts.some(p => ['queued', 'processing', 'waiting'].includes(p.status));
@@ -1414,12 +1498,13 @@ function speakerLabels(sess) {
   const seen = []; for (const p of sess.parts) if (p.result && p.status === 'done') p.result.paragraphs.forEach(x => { if (!seen.includes(x.speaker)) seen.push(x.speaker); });
   return seen;
 }
-const docTitle = sess => (sess.title || '').trim() || `会議記録（${new Date(sess.createdAt).getMonth() + 1}月${new Date(sess.createdAt).getDate()}日）`;
+const docTitle = sess => (sess.title || '').trim() || `録音記録（${new Date(sess.createdAt).getMonth() + 1}月${new Date(sess.createdAt).getDate()}日）`;
 function metaLines(sess) {
   const end = sess.endedAt || (sess.createdAt + sess.totalSec * 1000);
   const L = sess.source === 'file'
     ? [...(sess.fileDate ? [['日付', dateJa(sess.fileDate)]] : []), ['音声ファイル', sess.fileName], ['録音時間', durJa(sess.totalSec)]]
     : [['日時', `${dateJa(sess.createdAt)} ${hm(sess.createdAt)}〜${hm(end)}`], ['録音時間', durJa(sess.totalSec)]];
+  if ((sess.gaps || []).length) L.push(['録音できていない時間', gapList(sess)]);
   if (sess.participants) L.push(['参加者', sess.participants.split(/[\n,、，]+/).map(s => s.trim()).filter(Boolean).join('、')]);
   return L;
 }
@@ -1497,8 +1582,12 @@ function toDocx(sess) {
     else body.push(`<w:p>${wRuns(it.text)}</w:p>`);
     prev = nm;
   }
+  return docxBlob(docTitle(sess), body.join(''));
+}
+function docxBlob(title, bodyXml) {
+  const W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
   const document = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document ${W}><w:body>${body.join('')}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1418" w:right="1418" w:bottom="1418" w:left="1418" w:header="851" w:footer="851" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+<w:document ${W}><w:body>${bodyXml}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1418" w:right="1418" w:bottom="1418" w:left="1418" w:header="851" w:footer="851" w:gutter="0"/></w:sectPr></w:body></w:document>`;
   const mincho = '<w:rFonts w:ascii="Yu Mincho" w:hAnsi="Yu Mincho" w:eastAsia="游明朝" w:cs="Times New Roman"/>';
   const gothic = '<w:rFonts w:ascii="Yu Gothic" w:hAnsi="Yu Gothic" w:eastAsia="游ゴシック"/>';
   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1510,6 +1599,11 @@ function toDocx(sess) {
 <w:style w:type="paragraph" w:customStyle="1" w:styleId="Turn"><w:name w:val="Turn"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="200"/></w:pPr></w:style>
 <w:style w:type="paragraph" w:customStyle="1" w:styleId="Gap"><w:name w:val="Gap"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="200" w:after="200"/></w:pPr><w:rPr><w:i/><w:color w:val="777777"/></w:rPr></w:style>
 <w:style w:type="character" w:customStyle="1" w:styleId="Speaker"><w:name w:val="Speaker"/><w:rPr>${gothic}<w:b/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:pBdr><w:bottom w:val="single" w:sz="4" w:space="2" w:color="A8B8AC"/></w:pBdr><w:spacing w:before="320" w:after="120"/><w:jc w:val="left"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr>${gothic}<w:b/><w:sz w:val="26"/><w:szCs w:val="26"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="200" w:after="80"/><w:jc w:val="left"/><w:outlineLvl w:val="2"/></w:pPr><w:rPr>${gothic}<w:b/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="List1"><w:name w:val="List1"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="60"/><w:ind w:left="420" w:hanging="210"/></w:pPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="List2"><w:name w:val="List2"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="60"/><w:ind w:left="840" w:hanging="210"/></w:pPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="Note"><w:name w:val="Note"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="60" w:after="0"/><w:jc w:val="left"/></w:pPr><w:rPr><w:color w:val="777777"/><w:sz w:val="17"/><w:szCs w:val="17"/></w:rPr></w:style>
 </w:styles>`;
   const now = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
   return zip([
@@ -1518,7 +1612,7 @@ function toDocx(sess) {
     { name: '_rels/.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>` },
     { name: 'docProps/core.xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xesc(docTitle(sess))}</dc:title><dc:creator>Parrot</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>` },
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xesc(title)}</dc:title><dc:creator>Parrot</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>` },
     { name: 'docProps/app.xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>Parrot</Application></Properties>` },
     { name: 'word/_rels/document.xml.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1526,6 +1620,209 @@ function toDocx(sess) {
     { name: 'word/document.xml', data: document },
     { name: 'word/styles.xml', data: styles }
   ]);
+}
+
+
+/* ====== 要点まとめ ====== */
+const SUM_SYS = `あなたは、録音の文字起こしから「あとで読み返して内容をすばやく把握できる要点まとめ」を作る専門家です。
+
+【手順】
+1. まず、文字起こしの内容から記録の種類を判断する。例：職員会議・学年会などの会議／研究の打ち合わせ／授業研究会や指導助言を受ける協議会／楽器や歌などのレッスン／講演・研修／面談・相談／授業／その他。
+2. その種類の記録を読み返す人がいちばん知りたいことが分かるように、最適な見出し構成を自分で決めてまとめる。構成の例（内容に合わせて変えてよい）：
+ ・会議：概要／議題ごとの要点／決定事項／今後の対応（担当・期限）／保留・要確認事項
+ ・研究の打ち合わせ：目的／議論の要点／合意した方針／残った課題／次にやること
+ ・協議会・指導助言：概要／指導・助言の要点（助言者ごと・観点ごと）／質疑応答／今後に生かすこと
+ ・レッスン：取り組んだ曲・内容／指摘されたこと（箇所と具体的な直し方）／練習方法やコツ／次回までの課題
+ ・講演・研修：テーマ／主なポイント／具体例・データ／実践に生かせること
+
+【守ること】
+・文字起こしに書かれていないことは書かない。推測で補わない。
+・人名、数字、日付、期限、曲名、箇所（小節・ページ・単元など）は文字起こしのとおり正確に書く。
+・はっきりしない点や聞き取り不明な点は「［要確認］」と書く。
+・誰の発言・助言かが大事な場合は、その話者名を書く。
+・大事な言葉は「」で短く引用してよい。
+・箇条書きを中心に簡潔に。ただし理由や具体的な方法など、大事な中身は省きすぎない。
+・決定事項や課題がない場合、その見出しは作らない。
+・「まとめ方の希望」があれば、それを優先する。
+
+【出力の形式】
+・1行目に「種類：（判断した種類）」とだけ書く。
+・2行目以降はMarkdownで書く。見出しは「## 」と「### 」だけを使う（「# 」は使わない）。
+・最初の見出しは「## 概要」とし、2〜4文で全体をまとめる。
+・箇条書きは「- 」を使い、入れ子は1段まで（半角スペース2つ＋「- 」）。順番が大事なものだけ「1. 」を使う。
+・強調は **太字** だけを使う。表、コードブロック、絵文字、水平線は使わない。`;
+
+function transcriptText(sess) {
+  const L = []; let prev = null;
+  for (const it of items(sess)) {
+    if (it.gap) { L.push(`［${gapText(it.part)}］`); prev = null; continue; }
+    const nm = dispName(sess, it.speaker);
+    L.push(nm !== prev ? `${nm}：${it.text}` : it.text); prev = nm;
+  }
+  return L.join('\n');
+}
+function buildSummaryPrompt(sess, hint) {
+  const L = [`【記録の名前】${(sess.title || '').trim() || '（なし）'}`];
+  metaLines(sess).forEach(([k, v]) => L.push(`【${k}】${v}`));
+  if (hint) L.push(`【まとめ方の希望】${hint}`);
+  L.push('', '【文字起こし】', transcriptText(sess), '', '上の文字起こしから、要点まとめを作ってください。');
+  return L.join('\n');
+}
+async function callGeminiText(sys, prompt, model) {
+  const body = { systemInstruction: { parts: [{ text: sys }] }, contents: [{ role: 'user', parts: [{ text: prompt }] }] };
+  if (/^gemini-(1|2)\./.test(model)) body.generationConfig = { temperature: 0.3 };
+  let res;
+  try {
+    res = await fetch(`${API}/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': getKey() }, body: JSON.stringify(body)
+    });
+  } catch (e) { return { kind: 'retry', wait: 15000, msg: 'Geminiに接続できませんでした。ネット接続を確認してください。' }; }
+  let data = null; try { data = JSON.parse(await res.text()); } catch (e) {}
+  if (!res.ok) return classifyError(res.status, data, 1);
+  const cand = data && data.candidates && data.candidates[0];
+  if (!cand) { const br = data && data.promptFeedback && data.promptFeedback.blockReason; return br ? { kind: 'block', msg: `Geminiが処理を断りました（${br}）` } : { kind: 'retry', wait: 8000, msg: '応答が空でした。再送します。' }; }
+  let text = ((cand.content && cand.content.parts) || []).filter(p => !p.thought).map(p => p.text || '').join('').trim();
+  text = text.replace(/^```(?:markdown|md)?\s*\n/i, '').replace(/\n```\s*$/, '').trim();
+  if (!text) return { kind: 'retry', wait: 8000, msg: '応答が空でした。再送します。' };
+  return { kind: 'ok', text, truncated: cand.finishReason === 'MAX_TOKENS' };
+}
+async function makeSummary() {
+  const sess = S.session; if (!sess || S.summarizing || R) return;
+  const done = sess.parts.filter(p => p.status === 'done').length;
+  if (!done) return;
+  if (done < sess.parts.length && !confirm('まだ文字起こしが終わっていない部分があります。今ある分だけで要点まとめを作りますか？')) return;
+  const hint = $('#sumHint').value.trim(); sess.summaryHint = hint;
+  const prompt = buildSummaryPrompt(sess, hint);
+  S.summarizing = { sid: sess.id, model: null, msg: '' }; S.sumError = null; renderSummary();
+  const skip = [], busyHits = {}; let waits = 0, tries = 0;
+  try {
+    for (;;) {
+      const model = pickModel(skip);
+      if (!model) {
+        const left = usableIgnoringBusy(skip);
+        if (left.length && waits < 4) { waits++; left.forEach(m => { delete busyUntil[m]; }); S.summarizing.msg = 'どのモデルも混み合っています。少し待って再送します。'; renderSummary(); await sleep(20000); continue; }
+        throw new Error(left.length ? 'Geminiが混み合っていて作成できませんでした。しばらくしてからもう一度押してください。' : ALL_OUT.replace('「失敗したパートをまとめて再試行」', '「要点まとめを作成」'));
+      }
+      S.summarizing.model = model; renderSummary(); tries++;
+      const r = await callGeminiText(SUM_SYS, prompt, model);
+      if (r.kind === 'ok') {
+        let md = r.text, kind = '';
+        const m = md.match(/^\s*(?:\*\*)?種類(?:\*\*)?[：:]\s*(.+)\n/);
+        if (m) { kind = m[1].replace(/\*\*/g, '').trim(); md = md.slice(m[0].length).trim(); }
+        sess.summary = { md, kind, model, at: Date.now(), names: JSON.stringify(sess.renames || {}), partial: done < sess.parts.length, truncated: !!r.truncated };
+        saveSession(sess); break;
+      }
+      if (r.kind === 'daily') { markExhausted(model); continue; }
+      if (r.kind === 'busy') { busyHits[model] = (busyHits[model] || 0) + 1; if (busyHits[model] >= 2) { busyUntil[model] = Date.now() + 600000; continue; } S.summarizing.msg = r.msg; renderSummary(); await sleep(8000); continue; }
+      if (r.kind === 'block' && skip.length < 2) { skip.push(model); continue; }
+      if (r.kind === 'retry' && tries < 5) { S.summarizing.msg = r.msg; renderSummary(); await sleep(Math.min(r.wait, 30000)); continue; }
+      throw new Error(r.msg);
+    }
+  } catch (e) { S.sumError = { sid: sess.id, msg: e.message }; }
+  finally { S.summarizing = null; renderSummary(); }
+}
+
+/* --- まとめ（Markdown）の表示・保存 --- */
+function parseMd(md) {
+  const out = [];
+  for (const raw of String(md).replace(/\r/g, '').split('\n')) {
+    const line = raw.replace(/\s+$/, ''); if (!line.trim()) continue;
+    let m;
+    if ((m = line.match(/^#{1,2}\s+(.*)/))) out.push({ t: 'h2', text: m[1] });
+    else if ((m = line.match(/^#{3,6}\s+(.*)/))) out.push({ t: 'h3', text: m[1] });
+    else if ((m = line.match(/^(\s*)[-*+・]\s+(.*)/))) out.push({ t: 'ul', lv: m[1].replace(/\t/g, '  ').length >= 2 ? 2 : 1, text: m[2] });
+    else if ((m = line.match(/^(\s*)(\d+)[.)．]\s+(.*)/))) out.push({ t: 'ol', lv: m[1].replace(/\t/g, '  ').length >= 2 ? 2 : 1, n: m[2], text: m[3] });
+    else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) continue;
+    else if ((m = line.match(/^>\s?(.*)/))) out.push({ t: 'p', text: m[1] });
+    else out.push({ t: 'p', text: line.trim() });
+  }
+  return out;
+}
+function inlineSegs(text) { // **太字** だけを扱う
+  const t = String(text).replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1$2').replace(/`/g, '');
+  return t.split(/(\*\*[^*]+?\*\*)/).filter(Boolean).map(x => /^\*\*[^*]+\*\*$/.test(x) ? { b: true, s: x.slice(2, -2) } : { b: false, s: x.replace(/\*\*/g, '') });
+}
+const inlineHtml = text => inlineSegs(text).map(x => x.b ? `<b>${esc(x.s)}</b>` : esc(x.s)).join('');
+function mdBlocksHtml(blocks) {
+  let h = ''; const open = [];
+  for (const b of blocks) {
+    if (b.t === 'ul' || b.t === 'ol') {
+      while (open.length && open[open.length - 1].lv > b.lv) h += `</li></${open.pop().tag}>`;
+      const top = open[open.length - 1];
+      if (top && top.lv === b.lv) {
+        if (top.tag === b.t) h += '</li><li>';
+        else { h += `</li></${open.pop().tag}><${b.t}><li>`; open.push({ tag: b.t, lv: b.lv }); }
+      } else { h += `<${b.t}><li>`; open.push({ tag: b.t, lv: b.lv }); }
+      h += inlineHtml(b.text);
+    } else {
+      while (open.length) h += `</li></${open.pop().tag}>`;
+      h += b.t === 'h2' ? `<h2>${inlineHtml(b.text)}</h2>` : b.t === 'h3' ? `<h3>${inlineHtml(b.text)}</h3>` : `<p>${inlineHtml(b.text)}</p>`;
+    }
+  }
+  while (open.length) h += `</li></${open.pop().tag}>`;
+  return h;
+}
+const sumTitle = sess => `${docTitle(sess)}（要点まとめ）`;
+const SUM_NOTE = 'AIが文字起こしから作成した要点まとめです。正確な内容は文字起こしで確認してください。';
+function sumMetaLines(sess) {
+  const L = metaLines(sess).filter(([k]) => k !== '録音できていない時間');
+  if (sess.summary && sess.summary.kind) L.unshift(['種類', sess.summary.kind]);
+  return L;
+}
+function summaryMarkdown(sess) {
+  const L = [`# ${sumTitle(sess)}`, ''];
+  sumMetaLines(sess).forEach(([k, v]) => L.push(`- ${k}：${v}`));
+  L.push('', `*${SUM_NOTE}*`, '', '---', '', sess.summary.md.trim(), '');
+  return L.join('\n');
+}
+function summaryHtml(sess) {
+  return `<h1>${esc(sumTitle(sess))}</h1>` + sumMetaLines(sess).map(([k, v]) => `<p>${esc(k)}：${esc(v)}</p>`).join('') + `<p><i>${esc(SUM_NOTE)}</i></p><hr>` + mdBlocksHtml(parseMd(sess.summary.md));
+}
+function summaryDocx(sess) {
+  const runs = (text, bold) => inlineSegs(text).map(x => wRuns(x.s, (bold || x.b) ? '<w:rPr><w:b/></w:rPr>' : '')).join('');
+  const body = [`<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr>${wRuns(sumTitle(sess))}</w:p>`];
+  sumMetaLines(sess).forEach(([k, v]) => body.push(`<w:p><w:pPr><w:pStyle w:val="Meta"/></w:pPr>${wRuns(`${k}：${v}`)}</w:p>`));
+  body.push(`<w:p><w:pPr><w:pStyle w:val="Note"/></w:pPr>${wRuns(SUM_NOTE)}</w:p>`);
+  body.push(`<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="A8B8AC"/></w:pBdr><w:spacing w:after="120"/></w:pPr></w:p>`);
+  const nums = {};
+  for (const b of parseMd(sess.summary.md)) {
+    if (b.t === 'h2') { body.push(`<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr>${runs(b.text)}</w:p>`); continue; }
+    if (b.t === 'h3') { body.push(`<w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr>${runs(b.text)}</w:p>`); continue; }
+    if (b.t === 'ul' || b.t === 'ol') {
+      const mark = b.t === 'ul' ? (b.lv === 1 ? '・' : '－') : `${b.n}. `;
+      body.push(`<w:p><w:pPr><w:pStyle w:val="List${b.lv}"/></w:pPr>${wRuns(mark)}${runs(b.text)}</w:p>`); continue;
+    }
+    body.push(`<w:p>${runs(b.text)}</w:p>`);
+  }
+  return docxBlob(sumTitle(sess), body.join(''));
+}
+function renderSummary() {
+  const sess = S.session; if (!sess) return;
+  const busy = S.summarizing && S.summarizing.sid === sess.id, sm = sess.summary;
+  const anyDone = sess.parts.some(p => p.status === 'done');
+  const btn = $('#btnSum');
+  btn.disabled = !!R || !!S.summarizing || !anyDone;
+  btn.textContent = sm ? '作り直す' : '要点まとめを作成';
+  btn.classList.toggle('primary', !sm);
+  const hintEl = $('#sumHint'); if (document.activeElement !== hintEl && hintEl.dataset.sid !== sess.id) { hintEl.value = sess.summaryHint || ''; hintEl.dataset.sid = sess.id; }
+  let st = '';
+  if (busy) st = `<span class="spin"></span>要点をまとめています…（${esc(S.summarizing.model || '')}）${S.summarizing.msg ? '<br>' + esc(S.summarizing.msg) : ''}`;
+  else if (S.sumError && S.sumError.sid === sess.id) st = `<span class="bad">${esc(S.sumError.msg)}</span>`;
+  else if (!anyDone) st = '文字起こしが終わると作成できます。';
+  else if (sm) {
+    const notes = [];
+    if (sm.names !== JSON.stringify(sess.renames || {})) notes.push('話者名を変更したので、「作り直す」と新しい名前で作り直せます。');
+    if (sm.partial) notes.push('文字起こしが途中の時点で作成したまとめです。');
+    if (sm.truncated) notes.push('まとめが長すぎて途中で切れています。「作り直す」を試してください。');
+    st = notes.map(esc).join('<br>');
+  }
+  $('#sumStatus').innerHTML = st;
+  $('#sumOut').classList.toggle('hidden', !sm);
+  if (sm) {
+    $('#sumDocTitle').textContent = sumTitle(sess);
+    $('#sumMeta').textContent = sumMetaLines(sess).map(([k, v]) => `${k}：${v}`).join('　');
+    $('#sumBody').innerHTML = mdBlocksHtml(parseMd(sm.md));
+  }
 }
 
 /* ====== rendering ====== */
@@ -1537,7 +1834,11 @@ function renderRecorder() {
   $('#recLabel').textContent = rec ? '録音を停止' : (S.session && !S.session.recording ? '新しく録音を始める' : '録音を開始');
   $('#recTime').classList.toggle('hidden', !rec);
   $('#recWarn').classList.toggle('hidden', !rec);
-  $('#recWarn').textContent = isIOS ? '画面を消したり、ほかのアプリに切り替えたりすると録音が止まります。画面をつけたままにしてください（長い会議はボイスメモでの録音がおすすめです）' : '録音中はこのタブを閉じたり、PCをスリープさせたりしないでください';
+  $('#recWarn').textContent = isIOS ? '横のボタンで画面を消したり、ほかのアプリに切り替えたりすると録音が止まります。画面をつけたままにしてください（長い会議はボイスメモでの録音がおすすめです）' : '録音中はこのタブを閉じたり、PCをスリープさせたりしないでください';
+  $('#wakeAlert').classList.toggle('hidden', !(rec && R.wakeOk === false));
+  $('#wakeAlertMsg').textContent = isIOS ? 'このままだと、画面が消えた時点で録音が止まります。iPhoneの「設定」→「画面表示と明るさ」→「自動ロック」を「なし」にしてください（録音が終わったら元に戻してOKです）。'
+    : '画面が消えたりスリープしたりすると録音が止まることがあります。PCの省電力設定で、画面を消す・スリープする時間を長めにしておいてください。';
+  if (!rec) $('#liveSilent').classList.add('hidden');
   $('#prefields').classList.toggle('hidden', rec);
   $('#recBtn').disabled = !!S.importing; $('#btnImport').disabled = !!S.importing;
   if (S.importing) { $('#recLabel').textContent = '音声ファイルを読み込み中…'; $('#recSub').textContent = '読み込みながら、準備できたパートから順に文字起こしします'; $('#ringProg').style.strokeDashoffset = 590.6; return; }
@@ -1551,6 +1852,7 @@ function updateRecUI() {
   if (!R) return;
   const total = R.totalSamples / RATE, inPart = R.partSamples / RATE;
   $('#recTime').textContent = clock(total);
+  $('#liveSilent').classList.toggle('hidden', !(R.silentFrom !== null && total - R.silentFrom > 6));
   $('#recSub').textContent = `パート${S.session.parts.length + 1}を録音中 · 次の区切りまで ${clock(SEG_SEC - inPart)}`;
   $('#ringProg').style.strokeDashoffset = 590.6 * (1 - Math.min(1, inPart / SEG_SEC));
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) $('#halo').style.transform = `scale(${1 + Math.min(0.32, R.level * 2.2)})`;
@@ -1559,7 +1861,7 @@ function renderSession() {
   const sess = S.session;
   $('#sessionView').classList.toggle('hidden', !sess);
   if (!sess) return;
-  renderParts(); renderSpeakers(); renderDoc();
+  renderParts(); renderSpeakers(); renderDoc(); renderSummary();
   const anyDone = sess.parts.some(p => p.status === 'done');
   ['#btnDocx', '#btnMd', '#btnCopy'].forEach(s => { $(s).disabled = !anyDone; });
   $('#btnAudio').disabled = !sess.parts.length;
@@ -1703,6 +2005,16 @@ async function testModel() {
 
 /* ====== events ====== */
 $('#recBtn').addEventListener('click', () => R ? stopRecording() : startRecording());
+$('#btnSum').addEventListener('click', makeSummary);
+$('#sumHint').addEventListener('input', e => { if (S.session) { S.session.summaryHint = e.target.value; saveSession(S.session, true); } });
+$('#btnSumDocx').addEventListener('click', () => { const s = S.session; saveFile(summaryDocx(s), fileBase(s) + '_要点まとめ.docx'); });
+$('#btnSumMd').addEventListener('click', () => { const s = S.session; saveFile(new Blob([summaryMarkdown(s)], { type: 'text/markdown' }), fileBase(s) + '_要点まとめ.md'); });
+$('#btnSumCopy').addEventListener('click', async () => {
+  const s = S.session, html = summaryHtml(s), md = summaryMarkdown(s);
+  try { await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([md], { type: 'text/plain' }) })]); toast('コピーしました。Wordにそのまま貼り付けられます'); }
+  catch (e) { try { await navigator.clipboard.writeText(md); toast('テキストとしてコピーしました'); } catch (e2) { toast('コピーできませんでした'); } }
+});
+$('#btnGapClose').addEventListener('click', () => $('#gapAlert').classList.add('hidden'));
 $('#btnImport').addEventListener('click', () => { if (!getKey()) { openSettings(true); toast('はじめにAPIキーを設定してください'); return; } $('#fileInput').click(); });
 $('#fileInput').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; if (f) importFile(f); });
 $('#btnSettings').addEventListener('click', () => openSettings());
@@ -1734,12 +2046,12 @@ $('#btnModels').addEventListener('click', () => { const k = $('#apiKey').value.t
 
 $('#title').addEventListener('input', e => { if (R && S.session) { S.session.title = e.target.value.trim(); saveSession(S.session, true); } });
 $('#participants').addEventListener('input', e => { if (R && S.session) { S.session.participants = e.target.value.trim(); saveSession(S.session, true); } });
-$('#docTitle').addEventListener('input', e => { if (!S.session) return; S.session.title = e.target.value; $('#docMeta').textContent = metaLines(S.session).map(([k, v]) => `${k}：${v}`).join('　'); saveSession(S.session, true); });
+$('#docTitle').addEventListener('input', e => { if (!S.session) return; S.session.title = e.target.value; renderSummary(); $('#docMeta').textContent = metaLines(S.session).map(([k, v]) => `${k}：${v}`).join('　'); saveSession(S.session, true); });
 $('#docTitle').addEventListener('blur', () => { if (S.session) { S.session.title = (S.session.title || '').trim(); refreshHistory(); } });
 $('#speakers').addEventListener('input', e => {
   const l = e.target.dataset && e.target.dataset.label; if (!l || !S.session) return;
   S.session.renames = S.session.renames || {}; S.session.renames[l] = e.target.value;
-  renderDoc(); saveSession(S.session, true);
+  renderDoc(); renderSummary(); saveSession(S.session, true);
 });
 $('#parts').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
